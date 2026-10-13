@@ -1,0 +1,14 @@
+# Secrets and tokens
+.env
+data/tokens.json
+
+# Caches / Python
+.cache/
+__pycache__/
+*.pyc
+
+# Everything inside data/ is personal (videos, photos, projects, generated files).
+# Only the folder skeleton (.gitkeep) is tracked.
+/data/**
+!/data/**/
+!/data/**/.gitkeep

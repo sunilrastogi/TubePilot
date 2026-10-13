@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Channel Lab</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f6f6f4;--card:#fff;--ink:#1c1c1a;--mute:#6b6b66;--line:#e4e4de;--acc:#d6372b;--acc2:#2563eb;--good:#16a34a}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--ink:#ecece8;--mute:#9a9a92;--line:#33332f;--acc:#ef5a4d;--acc2:#6b9bff;--good:#4ade80}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,Segoe UI,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:14px 24px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+h1{font-size:18px;margin:0}h1 span{color:var(--acc)}
+nav{display:flex;gap:4px;flex:1}nav button{background:none;border:0;padding:8px 14px;border-radius:8px;color:var(--mute);font:inherit;cursor:pointer}
+nav button.on{background:var(--bg);color:var(--ink);font-weight:600}
+main{max-width:1150px;margin:0 auto;padding:24px 16px 80px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.row>label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mute)}
+input,select,textarea{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;min-width:140px}
+textarea{width:100%;min-height:60px}
+button.go{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:9px 18px;font:inherit;font-weight:600;cursor:pointer}
+button.go:disabled{opacity:.5}button.ghost{background:none;border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font:inherit}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stat{background:var(--bg);border-radius:10px;padding:12px}.stat b{display:block;font-size:22px}.stat small{color:var(--mute)}
+h2{font-size:16px;margin:0 0 12px}.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:800px){.two{grid-template-columns:1fr}}
+.vid{display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--line)}.vid:first-of-type{border-top:0}
+.vid img{width:120px;height:68px;object-fit:cover;border-radius:6px;flex:none}.vid a{color:var(--ink);text-decoration:none;font-weight:600}.vid a:hover{color:var(--acc)}
+.meta{color:var(--mute);font-size:12.5px}.pill{display:inline-block;background:var(--bg);border-radius:99px;padding:2px 10px;margin:2px;font-size:12.5px}
+.pill.hot{background:color-mix(in srgb,var(--acc) 15%,transparent);color:var(--acc)}
+.tag{color:var(--good);font-weight:600}.err{color:var(--acc);padding:10px 0}.hide{display:none}
+ul.ins{margin:0;padding-left:18px}ul.ins li{margin:4px 0}
+table{width:100%;border-collapse:collapse;font-size:13.5px}td,th{text-align:left;padding:6px 8px;border-top:1px solid var(--line)}
+.block{border-left:3px solid var(--acc);padding:4px 0 4px 14px;margin:14px 0}.block .t{font-weight:700}.block .t code{color:var(--acc)}
+.vis{color:var(--mute);font-size:13px;font-style:italic}pre{white-space:pre-wrap;background:var(--bg);padding:12px;border-radius:8px;font:13px/1.5 ui-monospace,Consolas,monospace}
+.canvas{position:relative;height:240px}
+.idea{border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px;background:var(--card)}.idea.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.idea h3{margin:0 0 4px;font-size:16px}.refs{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}.refs img{width:96px;border-radius:6px}
+.pri{font-size:11px;font-weight:700;text-transform:uppercase;border-radius:6px;padding:1px 7px;margin-right:6px;background:var(--bg)}
+.pri.high{background:var(--acc);color:#fff}.pri.medium{background:var(--acc2);color:#fff}
+.imp{padding:10px 0;border-top:1px solid var(--line)}.imp:first-of-type{border-top:0}
+.thumbs{display:flex;gap:10px;flex-wrap:wrap}.thumbs figure{margin:0;width:200px}.thumbs img{width:100%;border-radius:8px;display:block}
+.thumbs figcaption{font-size:12px;color:var(--mute)}.gen img{width:100%;max-width:420px;border-radius:8px;margin-top:8px;display:block;cursor:pointer;border:3px solid transparent}
+.gen img.use{border-color:var(--good)}
+.tidea{border-top:1px solid var(--line);padding:12px 0}.tidea textarea{min-height:70px;margin-top:6px}
+input.w,textarea.w,select.w{width:100%}.field{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mute);margin-bottom:10px}
+.bar{height:10px;background:var(--bg);border-radius:6px;overflow:hidden}.bar i{display:block;height:100%;background:var(--good);width:0}
+.blk textarea{min-height:90px}.blk .ts{color:var(--acc);font-weight:700;font-family:ui-monospace,Consolas,monospace}
+.gi{margin-top:8px}.gi img{margin-top:0!important}.dl{display:inline-block;margin-top:4px;font-size:13px;color:var(--acc2);font-weight:600;text-decoration:none}
+.warn{background:color-mix(in srgb,var(--acc) 10%,transparent);border-radius:8px;padding:10px 12px;font-size:13px;margin:8px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>Channel <span>Lab</span></h1>
+  <nav>
+    <button data-tab="channel" class="on">My channel</button>
+    <button data-tab="video">Video analysis</button>
+    <button data-tab="next">Next 3 videos</button>
+    <button data-tab="trends">Niche trends</button>
+    <button data-tab="script">Quick script</button>
+    <button data-tab="workspace">Workspace</button>
+    <button data-tab="publish">Publish</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+  <small class="meta" id="status"></small>
+</header>
+<main>
+
+<section id="tab-channel">
+  <div class="card"><div class="row">
+    <label>Channel handle or ID<input id="ch-handle" placeholder="@yourchannel"></label>
+    <label>Videos to analyze<select id="ch-count"><option>25</option><option selected>50</option><option>100</option></select></label>
+    <button class="go" id="ch-go">Analyze</button>
+  </div><div id="ch-err" class="err"></div></div>
+  <div id="ch-out"></div>
+</section>
+
+<section id="tab-trends" class="hide">
+  <div class="card"><div class="row">
+    <label>Niche keywords (comma-separated, max 4)<input id="tr-q" style="min-width:320px" placeholder="home espresso, coffee grinder"></label>
+    <label>Window<select id="tr-days"><option value="3">3 days</option><option value="7" selected>7 days</option><option value="30">30 days</option></select></label>
+    <label>Region<input id="tr-region" value="US" style="min-width:60px;width:70px"></label>
+    <button class="go" id="tr-go">Find trends</button>
+    <button class="ghost" id="tr-mine" title="Fill from your channel's top title keywords">Use my top keywords</button>
+  </div><div class="meta" style="margin-top:8px">Each keyword costs 100 YouTube API quota units (daily free quota: 10,000). Results are cached 1 hour.</div>
+  <div id="tr-err" class="err"></div></div>
+  <div id="tr-out"></div>
+</section>
+
+<section id="tab-script" class="hide">
+  <div class="card">
+    <div class="row">
+      <label style="flex:1;min-width:260px">Topic / working title<input id="sc-topic" style="width:100%" placeholder="Why most home espresso is sour (and the 3-minute fix)"></label>
+      <label>Length (min)<input id="sc-min" type="number" value="8" min="1" max="40" style="min-width:80px;width:90px"></label>
+      <label>Pace (wpm)<input id="sc-wpm" type="number" value="150" style="min-width:80px;width:90px"></label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label style="flex:1">Niche / audience<input id="sc-niche" style="width:100%"></label>
+      <label style="flex:1">Tone<input id="sc-tone" style="width:100%" value="conversational, energetic"></label>
+    </div>
+    <label class="meta" style="display:block;margin-top:10px">Notes (points to cover, your style, trending angles to use)<textarea id="sc-notes"></textarea></label>
+    <div style="margin-top:10px"><button class="go" id="sc-go">Generate script</button>
+      <button class="ghost" id="sc-from-trend" title="Pre-fill notes with trending keywords from the Trends tab">Add trending keywords to notes</button></div>
+    <div id="sc-err" class="err"></div>
+  </div>
+  <div id="sc-out"></div>
+</section>
+
+<section id="tab-video" class="hide">
+  <div class="card"><div class="row">
+    <label>Video URL or ID (yours or anyone's)<input id="vd-id" style="min-width:340px" placeholder="https://youtu.be/..."></label>
+    <button class="go" id="vd-go">Analyze &amp; compare</button>
+  </div><div class="meta" style="margin-top:8px">Finds similar videos from other channels, keeps the ones gaining views fastest, and compares tags, title, description and thumbnails. Costs ~210 YouTube quota units.</div>
+  <div id="vd-err" class="err"></div></div>
+  <div id="vd-out"></div>
+</section>
+
+<section id="tab-next" class="hide">
+  <div class="card"><div class="row">
+    <label>Niche keywords (optional, max 2 used)<input id="nx-q" style="min-width:300px" placeholder="defaults to Settings niche or your top title words"></label>
+    <label>Region<input id="nx-region" value="US" style="min-width:60px;width:70px"></label>
+    <button class="go" id="nx-go">Suggest my next 3 videos</button>
+  </div><div class="meta" style="margin-top:8px">Combines your channel analysis with what's trending in your niche. Costs ~200 quota units.</div><div id="nx-err" class="err"></div></div>
+  <div id="nx-ideas"></div>
+  <div id="nx-form" class="card hide"></div>
+  <div id="nx-pkg"></div>
+</section>
+
+<section id="tab-workspace" class="hide">
+  <div class="card"><h2>Style reference <span class="meta">data/style_reference</span></h2><div class="meta" id="ws-style"></div>
+    <div style="margin-top:10px"><button class="go" id="ws-style-go">Build / update style.md</button> <button class="ghost" data-view="style">View style.md</button></div>
+    <div class="meta" id="ws-style-msg" style="margin-top:6px"></div></div>
+  <div class="card"><h2>Master assets <span class="meta">data/master_assets</span></h2><div class="meta" id="ws-assets"></div>
+    <div style="margin-top:10px"><button class="go" id="ws-assets-go">Index new assets</button> <button class="ghost" data-view="assets">View master_assets.md</button></div>
+    <div class="meta" id="ws-assets-msg" style="margin-top:6px"></div></div>
+  <div class="card"><h2>Edit folders <span class="meta">data/edits</span></h2>
+    <div class="row" style="margin-bottom:12px"><label>New edit folder<input id="ws-new" placeholder="my-next-video"></label><button class="ghost" id="ws-new-go">Create</button></div>
+    <div id="ws-edits"></div><div class="err" id="ws-err"></div></div>
+  <div class="card hide" id="ws-viewer"><h2 id="ws-vt"></h2><pre id="ws-vb" style="max-height:600px;overflow:auto"></pre></div>
+</section>
+
+<section id="tab-publish" class="hide">
+  <div class="card"><h2>1 · Google account</h2><div id="pb-conn" class="meta">Checking…</div></div>
+  <div class="card">
+    <h2>2 · Choose edit folder</h2>
+    <div class="two">
+      <label class="field">Edit folder (data/edits/…)<select id="pb-edit" class="w"></select></label>
+      <label class="field">Final video (from final_edit)<select id="pb-file" class="w"></select></label>
+    </div>
+    <label class="field">Title (max 100)<input id="pb-title" class="w"></label>
+    <label class="field">Description<textarea id="pb-desc" class="w" style="min-height:160px"></textarea></label>
+    <label class="field">Tags (comma-separated) <span id="pb-tagc"></span><textarea id="pb-tags" class="w"></textarea></label>
+    <div class="field">Thumbnail<div class="thumbs" id="pb-thumbs"></div></div>
+    <div class="row">
+      <label>Visibility<select id="pb-priv"><option value="private">Private</option><option value="unlisted">Unlisted</option><option value="public">Public</option></select></label>
+      <label>Category<select id="pb-cat"><option value="22">People &amp; Blogs</option><option value="27">Education</option><option value="28">Science &amp; Tech</option><option value="24">Entertainment</option><option value="26">Howto &amp; Style</option><option value="20">Gaming</option><option value="19">Travel &amp; Events</option><option value="25">News &amp; Politics</option></select></label>
+      <label>Made for kids?<select id="pb-kids"><option value="">Select…</option><option value="no">No</option><option value="yes">Yes</option></select></label>
+      <label>Schedule (private only, optional)<input id="pb-at" type="datetime-local"></label>
+    </div>
+    <div class="warn">Uploading costs 1,600 YouTube quota units (about 6 uploads per day on the free quota). Projects whose Google Cloud app is unverified may be forced to <b>private</b> by YouTube regardless of this setting.</div>
+    <label style="display:block;margin:8px 0"><input type="checkbox" id="pb-ok" style="min-width:0"> I confirm I want to upload this file to my channel with these details.</label>
+    <button class="go" id="pb-go">Upload to YouTube</button>
+    <div id="pb-err" class="err"></div>
+    <div id="pb-prog" class="hide" style="margin-top:12px"><div class="bar"><i id="pb-bar"></i></div><div class="meta" id="pb-state" style="margin-top:6px"></div></div>
+  </div>
+</section>
+
+<section id="tab-settings" class="hide">
+  <div class="card">
+    <h2>Settings</h2>
+    <p class="meta">Stored locally in <code>.env</code> next to server.py. Fields left blank keep their saved value.</p>
+    <div style="max-width:560px">
+      <label class="field">YouTube Data API v3 key <span id="s-yt"></span><input id="s-ytkey" type="password" class="w" placeholder="AIza..."></label>
+      <div class="meta" id="s-claude" style="margin-bottom:10px"></div>
+      <label class="field">Anthropic API key — optional; leave blank to use your Claude login via the <code>claude</code> CLI <span id="s-an"></span><input id="s-ankey" type="password" class="w" placeholder="sk-ant-..."></label>
+      <label class="field">OpenAI API key (thumbnail generation) <span id="s-oa"></span><input id="s-oakey" type="password" class="w" placeholder="sk-..."></label>
+      <label class="field">Google OAuth client ID (for publishing) <span id="s-gc"></span><input id="s-gcid" class="w"></label>
+      <label class="field">Google OAuth client secret<input id="s-gcsec" type="password" class="w"></label>
+      <label class="field">Default channel handle<input id="s-ch" class="w" placeholder="@yourchannel"></label>
+      <label class="field">Your niche (default for ideas &amp; scripts)<input id="s-niche" class="w" placeholder="home coffee brewing"></label>
+      <div><button class="go" id="s-save">Save</button> <span id="s-msg" class="tag"></span></div>
+    </div>
+    <p class="meta"><b>YouTube key:</b> Google Cloud Console → enable "YouTube Data API v3" → Credentials → API key.<br>
+    <b>Publishing:</b> same project → enable it, then Credentials → Create OAuth client ID → type <b>Desktop app</b>; paste the ID/secret above. Add yourself as a test user on the OAuth consent screen.<br>
+    <b>Thumbnails:</b> uses OpenAI <code>gpt-image-1</code> (may require organization verification on your OpenAI account).</p>
+  </div>
+</section>
+</main>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const n=x=>x==null?'–':x>=1e6?(x/1e6).toFixed(1)+'M':x>=1e3?(x/1e3).toFixed(1)+'K':Math.round(x).toString();
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const dur=s=>s>=3600?`${Math.floor(s/3600)}:${String(Math.floor(s%3600/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`:`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+let cfg={}, lastChannel=null, lastTrends=null, charts=[];
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+async function api(path,body){
+  const r=await fetch(path,body?{method:'POST',body:JSON.stringify(body)}:{});
+  const j=await r.json(); if(!r.ok) throw new Error(j.error||r.statusText); return j;
+}
+function busy(btn,on,txt){btn.disabled=on; if(on){btn.dataset.t=btn.textContent;btn.textContent=txt||'Working…'}else btn.textContent=btn.dataset.t||btn.textContent}
+
+function showTab(name){
+  $$('nav button').forEach(x=>x.classList.toggle('on',x.dataset.tab===name));
+  $$('main>section').forEach(s=>s.classList.toggle('hide',s.id!=='tab-'+name));
+  if(name==='publish') loadPublish();
+  if(name==='workspace') loadWorkspace();
+}
+$$('nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
+
+async function loadCfg(){
+  cfg=await api('/api/config');
+  const m=(l,ok)=>`${l} ${ok?'✓':'✗'}`;
+  $('#status').textContent=[m('YouTube',cfg.youtube),m('Claude'+(cfg.claudeMode==='cli'?' (login)':''),cfg.anthropic),m('OpenAI',cfg.openai),m('Upload',cfg.googleConnected)].join('  ·  ');
+  const sv=(id,ok)=>$(id).textContent=ok?'(saved ✓)':'';
+  sv('#s-yt',cfg.youtube); sv('#s-an',cfg.claudeMode==='api');
+  $('#s-claude').innerHTML=cfg.claudeMode==='api'?'Claude: using your Anthropic API key.':cfg.claudeMode==='cli'?'Claude: using your Claude login through the <code>claude</code> CLI (no API key needed). If you see “not logged in”, open a terminal, run <code>claude</code> and type <code>/login</code> once.':'Claude: not available — install Claude Code or add an API key.'; sv('#s-oa',cfg.openai); sv('#s-gc',cfg.googleClient);
+  $('#ch-handle').value ||= cfg.channel; $('#s-ch').value ||= cfg.channel;
+  $('#s-niche').value ||= cfg.niche; $('#sc-niche').value ||= cfg.niche;
+  if(!cfg.youtube) showTab('settings'); else if(location.hash.length>1) showTab(location.hash.slice(1));
+}
+$('#s-save').onclick=async()=>{
+  await api('/api/settings',{YOUTUBE_API_KEY:$('#s-ytkey').value,ANTHROPIC_API_KEY:$('#s-ankey').value,OPENAI_API_KEY:$('#s-oakey').value,
+    GOOGLE_CLIENT_ID:$('#s-gcid').value,GOOGLE_CLIENT_SECRET:$('#s-gcsec').value,CHANNEL:$('#s-ch').value,NICHE:$('#s-niche').value});
+  ['#s-ytkey','#s-ankey','#s-oakey','#s-gcid','#s-gcsec'].forEach(i=>$(i).value='');
+  $('#s-msg').textContent='Saved'; setTimeout(()=>$('#s-msg').textContent='',2000); loadCfg();
+};
+
+function vidRow(v,extra=''){
+  return `<div class="vid"><img src="${v.thumb}" loading="lazy"><div><a href="https://youtu.be/${v.id}" target="_blank" rel="noopener">${esc(v.title)}</a>
+  <div class="meta">${n(v.views)} views · ${n(v.viewsPerDay)}/day · ${v.engagement}% engagement · ${v.short?'Short':dur(v.duration)} · ${v.ageDays|0}d ago${extra}
+  · <a href="#" data-analyze="${v.id}" style="color:var(--acc2);font-weight:600">Analyze ›</a></div></div></div>`;
+}
+document.addEventListener('click',e=>{const a=e.target.closest('[data-analyze]'); if(a){e.preventDefault(); openVideo(a.dataset.analyze)}});
+function openVideo(id){ $('#vd-id').value=id; showTab('video'); $('#vd-go').click(); }
+const chips=(arr,hot=0)=>arr.map((t,i)=>`<span class="pill ${i<hot?'hot':''}">${esc(t)}</span>`).join('');
+const copy=t=>navigator.clipboard.writeText(t);
+function chart(id,type,labels,data,label,color){
+  const c=new Chart($(id),{type,data:{labels,datasets:[{label,data,backgroundColor:color,borderColor:color,tension:.25}]},
+    options:{maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{color:css('--mute')},grid:{display:false}},y:{ticks:{color:css('--mute')},grid:{color:css('--line')}}}}});
+  charts.push(c);
+}
+
+// ---------- channel ----------
+$('#ch-go').onclick=async()=>{
+  const b=$('#ch-go'); $('#ch-err').textContent=''; busy(b,true,'Analyzing…');
+  try{
+    const d=lastChannel=await api(`/api/channel?handle=${encodeURIComponent($('#ch-handle').value)}&count=${$('#ch-count').value}`);
+    charts.forEach(c=>c.destroy()); charts=[];
+    const c=d.channel,s=d.summary;
+    $('#ch-out').innerHTML=`
+    <div class="card"><div style="display:flex;gap:12px;align-items:center;margin-bottom:14px"><img src="${c.thumb}" style="border-radius:50%;width:48px"><h2 style="margin:0">${esc(c.title)}</h2></div>
+    <div class="grid">
+      <div class="stat"><b>${c.hiddenSubs?'hidden':n(c.subs)}</b><small>subscribers</small></div>
+      <div class="stat"><b>${n(c.views)}</b><small>lifetime views</small></div>
+      <div class="stat"><b>${n(s.medianViews)}</b><small>median views (last ${s.analyzed})</small></div>
+      <div class="stat"><b>${n(s.medianViewsPerDay)}</b><small>median views/day</small></div>
+      <div class="stat"><b>${s.avgEngagement}%</b><small>avg engagement</small></div>
+      <div class="stat"><b>${s.uploadsPerMonth??'–'}</b><small>uploads / month</small></div>
+      <div class="stat"><b>${s.avgDurationMin}m</b><small>avg long-form length</small></div>
+    </div></div>
+    <div class="card"><h2>Insights</h2><ul class="ins">${d.insights.map(i=>`<li>${esc(i)}</li>`).join('')||'<li>Not enough data.</li>'}</ul></div>
+    <div class="card"><h2>Views per video (oldest → newest)</h2><div class="canvas"><canvas id="c-views"></canvas></div></div>
+    <div class="two">
+      <div class="card"><h2>Median views by upload day</h2><div class="canvas"><canvas id="c-day"></canvas></div></div>
+      <div class="card"><h2>Median views by length</h2><div class="canvas"><canvas id="c-len"></canvas></div></div>
+    </div>
+    <div class="two">
+      <div class="card"><h2>Top performers</h2>${d.top.map(v=>vidRow(v,` · <span class="tag">${v.vsMedian}× median</span>`)).join('')}</div>
+      <div class="card"><h2>Weakest recent</h2>${d.bottom.map(v=>vidRow(v,` · ${v.vsMedian}× median`)).join('')}</div>
+    </div>
+    <div class="card"><h2>Title keywords that move your views</h2>${d.keywords.map(k=>`<span class="pill">${esc(k.term)}</span>`).join('')}</div>
+    <div class="card"><h2>All analyzed videos — click Analyze for a video-level comparison</h2>
+      <table><tr><th>Title</th><th>Published</th><th>Views</th><th>vs median</th><th>Eng.</th><th></th></tr>
+      ${d.videos.map(v=>`<tr><td>${esc(v.title)}</td><td>${v.published.slice(0,10)}</td><td>${n(v.views)}</td><td>${v.vsMedian}×</td><td>${v.engagement}%</td><td><a href="#" data-analyze="${v.id}" style="color:var(--acc2);font-weight:600">Analyze ›</a></td></tr>`).join('')}</table></div>`;
+    const vs=[...d.videos].reverse();
+    chart('#c-views','line',vs.map(v=>v.published.slice(0,10)),vs.map(v=>v.views),'Views',css('--acc'));
+    chart('#c-day','bar',d.byWeekday.map(r=>`${r.label} (${r.count})`),d.byWeekday.map(r=>r.medianViews),'Median views',css('--acc2'));
+    chart('#c-len','bar',d.byLength.map(r=>`${r.label} (${r.count})`),d.byLength.map(r=>r.medianViews),'Median views',css('--acc2'));
+  }catch(e){$('#ch-err').textContent=e.message}
+  busy(b,false);
+};
+
+// ---------- trends ----------
+$('#tr-mine').onclick=async()=>{
+  if(!lastChannel){ $('#tr-err').textContent='Run the channel analysis first.'; return }
+  $('#tr-q').value=lastChannel.keywords.filter(k=>!k.term.includes(' ')).slice(0,3).map(k=>k.term).join(', ');
+};
+$('#tr-go').onclick=async()=>{
+  const b=$('#tr-go'); $('#tr-err').textContent=''; busy(b,true,'Searching…');
+  try{
+    const d=lastTrends=await api(`/api/trends?q=${encodeURIComponent($('#tr-q').value)}&days=${$('#tr-days').value}&region=${$('#tr-region').value}`);
+    $('#tr-out').innerHTML=`
+    <div class="card"><h2>Rising terms in titles</h2>${d.keywords.map((k,i)=>`<span class="pill ${i<5?'hot':''}">${esc(k.term)}</span>`).join('')}
+      <div class="meta" style="margin-top:8px">Weighted by views/day, so fast movers outrank old hits.</div></div>
+    <div class="card"><h2>Small channels beating their size</h2><div class="meta" style="margin-bottom:6px">Views ≥ subscriber count on channels under 100K — the topic is pulling, not the channel. Best ideas to adapt.</div>
+      ${d.smallChannelWinners.map(v=>vidRow(v,` · ${esc(v.channel)} (${n(v.subs)} subs) · <span class="tag">${v.outlier}× subs</span>`)).join('')||'<div class="meta">None found in this window.</div>'}</div>
+    <div class="card"><h2>All results by momentum (views/day)</h2>${d.videos.map(v=>vidRow(v,` · ${esc(v.channel)} (${n(v.subs)} subs)`)).join('')}</div>`;
+  }catch(e){$('#tr-err').textContent=e.message}
+  busy(b,false);
+};
+
+// ---------- script ----------
+$('#sc-from-trend').onclick=()=>{
+  if(!lastTrends){ $('#sc-err').textContent='Run a trend search first.'; return }
+  $('#sc-notes').value+=(($('#sc-notes').value?'\n':'')+'Trending terms to weave in: '+lastTrends.keywords.slice(0,8).map(k=>k.term).join(', '));
+};
+$('#sc-go').onclick=async()=>{
+  const b=$('#sc-go'); $('#sc-err').textContent=''; busy(b,true,'Writing… (~30s)');
+  try{
+    const d=await api('/api/script',{topic:$('#sc-topic').value,minutes:$('#sc-min').value,wpm:$('#sc-wpm').value,niche:$('#sc-niche').value,tone:$('#sc-tone').value,notes:$('#sc-notes').value});
+    $('#sc-out').innerHTML=`
+    <div class="card"><h2>Titles</h2><ul class="ins">${d.titles.map(t=>`<li>${esc(t)}</li>`).join('')}</ul>
+      <h2 style="margin-top:14px">Thumbnail ideas</h2><ul class="ins">${(d.thumbnail_ideas||[]).map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div>
+    <div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><h2>Script · ${d.totalLabel} total</h2>
+      <button class="ghost" onclick="copy(window._full)">Copy script</button></div>
+      ${d.blocks.map(b=>`<div class="block"><div class="t"><code>${b.startLabel}</code> ${esc(b.heading)} <span class="meta">· ${b.words} words · ~${b.seconds}s</span></div>
+        <div style="white-space:pre-wrap;margin-top:4px">${esc(b.narration)}</div>${b.visuals?`<div class="vis">Visuals: ${esc(b.visuals)}</div>`:''}</div>`).join('')}</div>
+    <div class="two"><div class="card"><div style="display:flex;justify-content:space-between"><h2>Chapters (paste in description)</h2><button class="ghost" onclick="copy(window._chap)">Copy</button></div><pre>${esc(d.chapters)}</pre></div>
+    <div class="card"><div style="display:flex;justify-content:space-between"><h2>Description + tags</h2><button class="ghost" onclick="copy(window._desc)">Copy</button></div><pre>${esc(d.description)}\n\n${esc(d.chapters)}\n\n${esc((d.tags||[]).join(', '))}</pre></div></div>`;
+    window._full=d.fullScript; window._chap=d.chapters; window._desc=`${d.description}\n\n${d.chapters}\n\n${(d.tags||[]).join(', ')}`;
+  }catch(e){$('#sc-err').textContent=e.message}
+  busy(b,false);
+};
+// ---------- shared: thumbnail ideas + OpenAI generation ----------
+function thumbIdeasHtml(pfx,ideas){
+  const opts=`<div class="row" style="margin:6px 0 2px"><label>Quality<select class="t-q"><option value="high" selected>High (best, ~$0.17/image)</option><option value="medium">Medium (~$0.04)</option></select></label>
+    <label style="flex-direction:row;align-items:center;gap:6px;color:var(--ink);font-size:13px"><input type="checkbox" class="t-enh" checked style="min-width:0"> Let Claude art-direct the prompt using the video's idea, hook and winning-thumbnail analysis</label></div>`;
+  return opts+(ideas||[]).map((t,i)=>`<div class="tidea"><b>${esc(t.concept)}</b>
+    <label class="field" style="margin:6px 0">Text overlay<input class="w" id="${pfx}-t${i}" value="${esc(t.text_overlay||'')}"></label>
+    <label class="field" style="margin:0">Image prompt (editable)<textarea class="w" id="${pfx}-p${i}">${esc(t.image_prompt||'')}</textarea></label>
+    <div style="margin-top:8px"><button class="ghost" data-gen="${pfx}:${i}">Generate image with OpenAI</button></div>
+    <div class="gen" id="${pfx}-o${i}"></div></div>`).join('');
+}
+document.addEventListener('click',async e=>{
+  const g=e.target.closest('[data-gen]');
+  if(g){
+    const [pfx,i]=g.dataset.gen.split(':'); const txt=$(`#${pfx}-t${i}`).value.trim();
+    const prompt=$(`#${pfx}-p${i}`).value; const card=g.closest('.card');
+    const opt={overlay:txt,quality:card.querySelector('.t-q').value,enhance:card.querySelector('.t-enh').checked,context:thumbContext(pfx)};
+    const out=$(`#${pfx}-o${i}`); const old=g.textContent; g.disabled=true; g.textContent='Generating… (up to ~1 min)';
+    try{
+      const d=await api('/api/thumbnail',{prompt,...opt});
+      out.insertAdjacentHTML('afterbegin',`<div class="gi"><img src="${d.url}" data-name="${d.name}" data-pfx="${pfx}" title="${pfx==='pk'?'Click to use as the thumbnail':''}"><a class="dl" href="${d.url}" download="${d.name}">⬇ Download thumbnail</a>
+        <details><summary class="meta">Prompt sent to OpenAI${d.directed?' (art-directed by Claude)':''} · ${d.quality}</summary><pre>${esc(d.prompt)}</pre></details></div>`);
+      if(pfx==='pk'){ pk.images.push(d.name); selectThumb(d.name) }
+    }catch(err){ out.insertAdjacentHTML('afterbegin',`<div class="err">${esc(err.message)}</div>`) }
+    g.disabled=false; g.textContent=old; return;
+  }
+  const im=e.target.closest('.gen img[data-pfx="pk"]'); if(im) selectThumb(im.dataset.name);
+});
+function thumbContext(pfx){
+  if(pfx==='pk') return {video_title:pk.title,topic:pk.idea&&pk.idea.title,angle:pk.idea&&pk.idea.angle,why_it_should_work:pk.idea&&pk.idea.why,
+    opening_hook:(pk.blocks[0]&&pk.blocks[0].narration||'').slice(0,400),key_points:pk.blocks.slice(1,-1).map(b=>b.heading),
+    trending_keywords:pk.keywords.slice(0,6).map(k=>k.term),winning_thumbnails_share:pk.thumbAnalysis,niche:cfg.niche};
+  return window._vdCtx||{};
+}
+function selectThumb(name){
+  pk.thumbnail=name; $$('#nx-pkg .gen img').forEach(i=>i.classList.toggle('use',i.dataset.name===name));
+  const l=$('#pk-thumb-sel'); if(l) l.textContent='Selected: '+name; saveProject();
+}
+
+// ---------- video-level analysis ----------
+$('#vd-go').onclick=async()=>{
+  const b=$('#vd-go'); $('#vd-err').textContent=''; busy(b,true,'Comparing… (~30s)');
+  try{
+    const d=await api('/api/video?id='+encodeURIComponent($('#vd-id').value)); const v=d.video, ai=d.ai;
+    const rows=d.compare.map(r=>{const bin=r.metric.includes('(%)');
+      const note=bin?(r.you===r.benchmark?'matches top videos':'differs from most top videos'):(r.you<r.benchmark*.8?'below':r.you>r.benchmark*1.25?'above':'in line');
+      return `<tr><td>${esc(r.metric.replace(' (%)',''))}</td><td><b>${bin?(r.you?'Yes':'No'):r.you}</b></td><td>${bin?(r.benchmark?'Most do':'Most don’t'):r.benchmark}</td><td class="meta">${note}</td></tr>`}).join('');
+    window._vdTags=((ai&&ai.tags)||d.missingTags).join(', ');
+    window._vdCtx={video_title:v.title,description_start:(v.desc||'').slice(0,400),tags:v.tags.slice(0,8),verdict:ai&&ai.summary,current_thumbnail_diagnosis:ai&&ai.thumbnail&&ai.thumbnail.diagnosis,niche:cfg.niche};
+    $('#vd-out').innerHTML=`
+    <div class="card"><div style="display:flex;gap:16px;flex-wrap:wrap"><img src="${v.thumb}" style="width:260px;border-radius:8px;align-self:flex-start">
+      <div style="flex:1;min-width:260px"><h2 style="margin-bottom:4px">${esc(v.title)}</h2>
+      <div class="meta">${n(v.views)} views · ${n(v.viewsPerDay)}/day · ${v.engagement}% engagement · ${dur(v.duration)} · ${v.ageDays|0} days old</div>
+      <div style="margin-top:8px"><b>Your tags (${v.tags.length}):</b> ${chips(v.tags)||'<span class="meta">none</span>'}</div>
+      <details style="margin-top:8px"><summary class="meta">Description</summary><pre>${esc(v.desc)||'(empty)'}</pre></details></div></div></div>
+    ${ai?`<div class="card"><h2>Verdict</h2><p style="margin:0">${esc(ai.summary)}</p></div>
+    <div class="card"><h2>Recommended improvements</h2>${(ai.improvements||[]).map(i=>`<div class="imp"><span class="pri ${i.priority}">${i.priority}</span><b>${esc(i.area)}</b> — ${esc(i.issue)}<div style="margin-top:4px">→ ${esc(i.fix)}</div></div>`).join('')}</div>`
+      :`<div class="card"><div class="err">AI analysis unavailable: ${esc(d.aiError||'')}</div><div class="meta">Data-based comparison below still works.</div></div>`}
+    <div class="card"><h2>You vs. ${d.similar.length} successful similar videos <span class="meta">(search: “${esc(d.query)}”)</span></h2>
+      <table><tr><th>Metric</th><th>Yours</th><th>Top similar (median)</th><th></th></tr>${rows}</table></div>
+    <div class="two">
+      <div class="card"><h2>1 · Keywords</h2>
+        ${ai?(ai.keywords||[]).map(k=>`<div style="margin:6px 0"><span class="pill hot">${esc(k.term)}</span><span class="meta">${esc(k.why)}</span></div>`).join(''):''}
+        <div class="meta" style="margin-top:8px">Seen in winners' titles, missing from yours:</div>${chips(d.missingKeywords.map(k=>k.term))||'<span class="meta">none</span>'}</div>
+      <div class="card"><div style="display:flex;justify-content:space-between"><h2>2 · Tags</h2><button class="ghost" onclick="copy(window._vdTags)">Copy suggested</button></div>
+        ${ai?`<div class="meta">Suggested set</div>${chips(ai.tags||[])}`:''}
+        <div class="meta" style="margin-top:8px">Used by 2+ top videos, missing from yours:</div>${chips(d.missingTags)||'<span class="meta">none</span>'}</div>
+    </div>
+    ${ai?`<div class="two"><div class="card"><h2>Title options</h2><ul class="ins">${(ai.title_options||[]).map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div>
+      <div class="card"><div style="display:flex;justify-content:space-between"><h2>Description rewrite</h2><button class="ghost" id="vd-copy-desc">Copy</button></div><pre>${esc(ai.description_rewrite||'')}</pre></div></div>`:''}
+    <div class="card"><h2>3 · Thumbnail — yours vs. winners</h2>
+      <div class="thumbs"><figure><img src="${v.thumb}"><figcaption><b>Yours</b> · <a class="dl" href="/api/ytthumb?id=${v.id}">⬇ Download</a></figcaption></figure>
+      ${d.similar.slice(0,5).map(s=>`<figure><img src="${s.thumb}"><figcaption>${esc(s.channel)} · ${n(s.viewsPerDay)}/day · <a class="dl" href="/api/ytthumb?id=${s.id}">⬇</a></figcaption></figure>`).join('')}</div>
+      ${ai&&ai.thumbnail?`<p>${esc(ai.thumbnail.diagnosis)}</p><h2 style="margin-top:14px">Ideas</h2>${thumbIdeasHtml('vd',ai.thumbnail.ideas)}`:''}</div>
+    <div class="card"><h2>Compared against</h2>${d.similar.map(s=>vidRow(s,` · ${esc(s.channel)} (${n(s.subs)} subs) · tags: ${s.tags.length}`)).join('')}</div>`;
+    const cd=$('#vd-copy-desc'); if(cd&&ai) cd.onclick=()=>copy(ai.description_rewrite||'');
+  }catch(e){$('#vd-err').textContent=e.message}
+  busy(b,false);
+};
+
+// ---------- next 3 videos ----------
+let ideas=[], pk={images:[]};
+$('#nx-go').onclick=async()=>{
+  const b=$('#nx-go'); $('#nx-err').textContent=''; busy(b,true,'Researching… (~40s)');
+  try{
+    const d=await api('/api/next-videos',{handle:$('#ch-handle').value,q:$('#nx-q').value,region:$('#nx-region').value});
+    ideas=d.ideas; $('#nx-form').classList.add('hide'); $('#nx-pkg').innerHTML='';
+    $('#nx-ideas').innerHTML=`<div class="meta" style="margin-bottom:8px">Based on your channel + trends for “${esc(d.query)}”. Pick one:</div>`+ideas.map((x,i)=>`
+      <div class="idea" id="idea-${i}"><span class="pri ${x.potential}">${esc(x.potential)} potential</span><span class="meta">${esc(x.format||'')} · ~${x.suggested_minutes} min</span>
+      <h3>${esc(x.title)}</h3><div>${esc(x.angle)}</div><div class="meta" style="margin-top:6px"><b>Why:</b> ${esc(x.why)}</div>
+      <div class="refs">${(x.refs||[]).map(r=>`<a href="https://youtu.be/${r.id}" target="_blank" title="${esc(r.title)} — ${esc(r.channel)}"><img src="${r.thumb}"></a>`).join('')}</div>
+      <div style="margin-top:10px"><button class="go" data-pick="${i}">Use this idea</button></div></div>`).join('');
+  }catch(e){$('#nx-err').textContent=e.message}
+  busy(b,false);
+};
+document.addEventListener('click',e=>{const p=e.target.closest('[data-pick]'); if(!p) return;
+  const i=+p.dataset.pick, x=ideas[i]; $$('.idea').forEach((el,j)=>el.classList.toggle('sel',j===i));
+  const f=$('#nx-form'); f.classList.remove('hide');
+  f.innerHTML=`<h2>Your inputs for “${esc(x.title)}” <span class="meta">(all optional)</span></h2>
+    <label class="field">Your angle / opinion / story to include<textarea class="w" id="in-angle"></textarea></label>
+    <label class="field">Must-cover points<textarea class="w" id="in-points" placeholder="one per line"></textarea></label>
+    <label class="field">Things to avoid or already covered elsewhere<input class="w" id="in-avoid"></label>
+    <div class="row"><label class="field">Length (min)<input id="in-min" type="number" value="${x.suggested_minutes||8}" style="min-width:80px;width:90px"></label>
+      <label class="field">Pace (wpm)<input id="in-wpm" type="number" value="150" style="min-width:80px;width:90px"></label>
+      <label class="field" style="flex:1">Tone<input class="w" id="in-tone" value="conversational, energetic"></label></div>
+    <label class="field">Call to action / sponsors / links to mention<input class="w" id="in-cta"></label>
+    <button class="go" id="in-go">Generate full package</button> <span class="err" id="in-err"></span>`;
+  f.scrollIntoView({behavior:'smooth'});
+  $('#in-go').onclick=async()=>{
+    const b=$('#in-go'); $('#in-err').textContent=''; busy(b,true,'Researching trends & writing… (~1–2 min)');
+    try{
+      const d=await api('/api/package',{idea:x,handle:$('#ch-handle').value,minutes:$('#in-min').value,wpm:$('#in-wpm').value,
+        inputs:{angle:$('#in-angle').value,must_cover:$('#in-points').value,avoid:$('#in-avoid').value,tone:$('#in-tone').value,cta:$('#in-cta').value}});
+      pk={id:null,idea:x,titles:d.titles||[],title:(d.titles||[x.title])[0],blocks:d.blocks,tags:d.tags||[],description:d.description||'',chapters:d.chapters,
+          thumbnail:null,images:[],keywords:d.keywords||[],evidence:d.evidence,thumbIdeas:(d.thumbnail||{}).ideas||[],thumbAnalysis:(d.thumbnail||{}).analysis||'',wpm:d.wpm};
+      renderPkg(); saveProject();
+    }catch(err){$('#in-err').textContent=err.message}
+    busy(b,false);
+  };
+});
+
+const fmtTs=s=>{s=Math.round(s);return s>=3600?`${Math.floor(s/3600)}:${String(Math.floor(s%3600/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`:`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`};
+const wc=t=>(t.match(/\S+/g)||[]).length;
+function retime(){
+  let t=0; pk.blocks.forEach((b,i)=>{ b.startLabel=fmtTs(t); const w=wc(b.narration); const s=w/pk.wpm*60; t+=s;
+    const a=$('#pk-ts-'+i), m=$('#pk-meta-'+i); if(a) a.textContent=b.startLabel; if(m) m.textContent=`${w} words · ~${Math.round(s)}s`; });
+  pk.chapters=pk.blocks.map(b=>`${b.startLabel} ${b.heading}`).join('\n');
+  const c=$('#pk-chap'); if(c) c.textContent=pk.chapters; const tt=$('#pk-total'); if(tt) tt.textContent=fmtTs(t);
+}
+function tagCount(){ const t=pk.tags.reduce((a,x)=>a+x.length+1+(x.includes(' ')?2:0),0); const el=$('#pk-tagc'); if(el) el.textContent=`${pk.tags.length} tags · ${t}/500 chars`; }
+function renderPkg(){
+  const e=pk.evidence||{};
+  $('#nx-pkg').innerHTML=`
+  <div class="card"><h2>Title</h2>
+    ${pk.titles.map((t,i)=>`<label style="display:block;margin:4px 0"><input type="radio" name="pk-t" data-title="${i}" ${t===pk.title?'checked':''} style="min-width:0"> ${esc(t)}</label>`).join('')}
+    <label class="field" style="margin-top:8px">Final title <span id="pk-tlen"></span><input class="w" id="pk-title" value="${esc(pk.title)}"></label></div>
+  <div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><h2>Script — editable · total <span id="pk-total"></span></h2><button class="ghost" id="pk-copy">Copy script</button></div>
+    ${pk.blocks.map((b,i)=>`<div class="block blk"><div><span class="ts" id="pk-ts-${i}"></span> <input data-blk="${i}:heading" value="${esc(b.heading)}" style="font-weight:700;min-width:240px"> <span class="meta" id="pk-meta-${i}"></span></div>
+      <textarea class="w" data-blk="${i}:narration" style="margin-top:6px">${esc(b.narration)}</textarea>
+      ${b.heading!=='Hook'&&b.heading!=='Outro'?`<input class="w vis" data-blk="${i}:visuals" value="${esc(b.visuals||'')}" placeholder="visuals / B-roll" style="margin-top:4px">`:''}</div>`).join('')}
+    <div class="meta">Timestamps are estimates from word count at ${pk.wpm} wpm — adjust to the final edit before publishing. Edits are re-timed live.</div></div>
+  <div class="two">
+    <div class="card"><h2>Trending keywords</h2>
+      ${pk.keywords.map(k=>`<div style="margin:5px 0"><span class="pill hot">${esc(k.term)}</span><span class="meta">${esc(k.why)}</span></div>`).join('')}
+      <div class="meta" style="margin-top:10px">Rising in titles of top videos on this topic (by views/day):</div>${chips((e.keywords||[]).map(k=>k.term))}</div>
+    <div class="card"><h2>Tags <span class="meta" id="pk-tagc"></span></h2>
+      <textarea class="w" id="pk-tags">${esc(pk.tags.join(', '))}</textarea>
+      <div class="meta" style="margin:8px 0 2px">Used by 2+ top videos (click to add):</div>
+      ${(e.tags||[]).map(t=>`<span class="pill" data-addtag="${esc(t.tag)}" style="cursor:pointer">${esc(t.tag)} <small>×${t.count}</small></span>`).join('')||'<span class="meta">none shared</span>'}</div>
+  </div>
+  <div class="two">
+    <div class="card"><h2>Description</h2><textarea class="w" id="pk-desc" style="min-height:200px">${esc(pk.description)}</textarea>
+      <div class="meta" style="margin-top:8px">Chapters (appended on publish):</div><pre id="pk-chap"></pre></div>
+    <div class="card"><h2>Reference: top trending videos</h2>${(e.videos||[]).slice(0,5).map(v=>`<div class="vid"><img src="${v.thumb}"><div><a href="https://youtu.be/${v.id}" target="_blank">${esc(v.title)}</a><div class="meta">${esc(v.channel)} · ${n(v.viewsPerDay)}/day</div></div></div>`).join('')}</div>
+  </div>
+  <div class="card"><h2>Thumbnail</h2><p>${esc(pk.thumbAnalysis)}</p>${thumbIdeasHtml('pk',pk.thumbIdeas)}
+    <div class="meta" id="pk-thumb-sel">${pk.thumbnail?'Selected: '+esc(pk.thumbnail):'Click a generated image to select it for publishing.'}</div></div>
+  <div class="card"><h2>Save</h2><div class="row"><label>Edit folder name<input id="pk-folder" value="${esc(pk.title.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,40))}"></label>
+    <button class="go" id="pk-export">Save to edit folder</button><button class="ghost" id="pk-save">Save draft only</button><button class="ghost" id="pk-pub">Go to Publish →</button></div>
+    <div class="meta" style="margin-top:6px">“Save to edit folder” writes <code>metadata.txt</code>, <code>script.md</code> and the selected thumbnail into <code>data/edits/&lt;name&gt;/</code> (creating the folder structure if needed).</div>
+    <span class="tag" id="pk-msg"></span></div>`;
+  retime(); tagCount(); $('#pk-tlen').textContent=`(${pk.title.length}/100)`;
+  $('#pk-copy').onclick=()=>copy(pk.blocks.map(b=>`[${b.startLabel}] ${b.heading.toUpperCase()}\n${b.narration}`).join('\n\n'));
+  $('#pk-save').onclick=async()=>{await saveProject(); $('#pk-msg').textContent='Saved'; setTimeout(()=>$('#pk-msg').textContent='',2000)};
+  $('#pk-pub').onclick=async()=>{await saveProject(); showTab('publish')};
+  $('#pk-export').onclick=async()=>{ try{ await saveProject(); const d=await api('/api/edit/export',{name:$('#pk-folder').value,title:pk.title,description:pk.description,tags:pk.tags,keywords:pk.keywords,chapters:pk.chapters,blocks:pk.blocks,thumbnail:pk.thumbnail});
+      $('#pk-msg').textContent='Saved to '+d.path }catch(e){ $('#pk-msg').innerHTML=`<span class="err">${esc(e.message)}</span>` } };
+}
+document.addEventListener('input',e=>{
+  if(!e.target.closest('#nx-pkg')) return; const el=e.target;
+  if(el.dataset.blk){ const [i,f]=el.dataset.blk.split(':'); pk.blocks[+i][f]=el.value; if(f!=='visuals') retime(); }
+  else if(el.id==='pk-title'){ pk.title=el.value; $('#pk-tlen').textContent=`(${el.value.length}/100)`; }
+  else if(el.id==='pk-desc') pk.description=el.value;
+  else if(el.id==='pk-tags'){ pk.tags=el.value.split(',').map(s=>s.trim()).filter(Boolean); tagCount(); }
+});
+document.addEventListener('change',e=>{ if(e.target.dataset&&e.target.dataset.title!==undefined&&e.target.closest('#nx-pkg')){ pk.title=pk.titles[+e.target.dataset.title]; $('#pk-title').value=pk.title; $('#pk-tlen').textContent=`(${pk.title.length}/100)`; }});
+document.addEventListener('click',e=>{ const t=e.target.closest('[data-addtag]'); if(!t) return;
+  if(!pk.tags.map(x=>x.toLowerCase()).includes(t.dataset.addtag)){ pk.tags.push(t.dataset.addtag); $('#pk-tags').value=pk.tags.join(', '); tagCount(); }});
+async function saveProject(){ const d=await api('/api/project',{...pk}); pk.id=d.id; }
+
+// ---------- workspace ----------
+async function pollJob(id,msgEl,btn){
+  const j=await api('/api/publish/status?job='+id);
+  if(j.state==='error'){ msgEl.innerHTML=`<span class="err">${esc(j.error)}</span>`; busy(btn,false); return }
+  if(j.state==='done'){ msgEl.innerHTML=`<span class="tag">Done ✓</span> ${esc(JSON.stringify(j.result||{}))}`; busy(btn,false); loadWorkspace(); return }
+  msgEl.textContent=`${j.msg||'Working…'} ${j.progress||0}%`; setTimeout(()=>pollJob(id,msgEl,btn),2500);
+}
+async function loadWorkspace(){
+  const w=await api('/api/workspace');
+  $('#ws-style').innerHTML=w.style.videos.length?`${w.style.videos.length} reference video(s): ${w.style.videos.map(esc).join(', ')} · style.md ${w.style.exists?'exists':'not built yet'}`:'No videos in data/style_reference yet.';
+  if(!w.style.ffmpeg) $('#ws-style').innerHTML+=`<div class="warn">ffmpeg isn't installed — needed to read frames from the videos. Run <code>winget install Gyan.FFmpeg</code>, then restart the app.</div>`;
+  $('#ws-assets').textContent=`${w.assets.total} image(s) in master_assets · ${w.assets.unindexed} not indexed yet · master_assets.md ${w.assets.exists?'exists':'not built yet'}`;
+  $('#ws-edits').innerHTML=w.edits.length?`<table><tr><th>Folder</th><th>Raw</th><th>Your assets</th><th>Claude assets</th><th>Thumb</th><th>Metadata</th><th>Final</th><th></th></tr>`+
+    w.edits.map(e=>`<tr><td><b>${esc(e.name)}</b><div class="meta">${esc(e.title||'')}</div></td><td>${e.raw}</td><td>${e.user_assets}</td><td>${e.claude_assets}</td><td>${e.thumbnails?'✓':'–'}</td><td>${e.hasMetadata?'✓':'–'}</td><td>${e.final?'✓':'–'}</td>
+      <td><button class="ghost" data-plan="${esc(e.name)}">Make edit plan</button> ${e.hasPlan?`<button class="ghost" data-view="plan:${esc(e.name)}">View plan</button>`:''}</td></tr>`).join('')+'</table>':'<div class="meta">No edit folders yet.</div>';
+}
+$('#ws-style-go').onclick=async()=>{ const b=$('#ws-style-go'); busy(b,true,'Building…'); try{ const j=await api('/api/style/build',{}); pollJob(j.job,$('#ws-style-msg'),b) }catch(e){ $('#ws-style-msg').innerHTML=`<span class="err">${esc(e.message)}</span>`; busy(b,false) } };
+$('#ws-assets-go').onclick=async()=>{ const b=$('#ws-assets-go'); busy(b,true,'Indexing…'); try{ const j=await api('/api/assets/index',{}); pollJob(j.job,$('#ws-assets-msg'),b) }catch(e){ $('#ws-assets-msg').innerHTML=`<span class="err">${esc(e.message)}</span>`; busy(b,false) } };
+$('#ws-new-go').onclick=async()=>{ try{ await api('/api/edit/create',{name:$('#ws-new').value}); $('#ws-new').value=''; loadWorkspace() }catch(e){ $('#ws-err').textContent=e.message } };
+document.addEventListener('click',async e=>{
+  const v=e.target.closest('[data-view]'), pl=e.target.closest('[data-plan]');
+  if(v){ const [which,edit]=v.dataset.view.split(':'); try{ const d=await api(`/api/md?which=${which}&edit=${encodeURIComponent(edit||'')}`);
+      $('#ws-viewer').classList.remove('hide'); $('#ws-vt').textContent=d.path; $('#ws-vb').textContent=d.text; $('#ws-viewer').scrollIntoView({behavior:'smooth'}) }catch(err){ $('#ws-err').textContent=err.message } }
+  if(pl){ $('#ws-err').textContent=''; busy(pl,true,'Planning… (~1 min)'); try{ const d=await api('/api/edit/plan',{name:pl.dataset.plan});
+      $('#ws-viewer').classList.remove('hide'); $('#ws-vt').textContent=d.path; $('#ws-vb').textContent=d.text; loadWorkspace() }catch(err){ $('#ws-err').textContent=err.message } busy(pl,false) }
+});
+
+// ---------- publish ----------
+let pbEdit=null, pbThumb=null;
+async function loadPublish(){
+  cfg=await api('/api/config');
+  const c=$('#pb-conn');
+  if(!cfg.googleClient) c.innerHTML='Add your Google OAuth client ID &amp; secret in <a href="#settings" onclick="showTab(\'settings\')">Settings</a> first.';
+  else if(!cfg.googleConnected) c.innerHTML='Not connected. <a href="/oauth/start"><button class="go">Connect Google account</button></a> <span class="meta">(sign in with the account that owns your channel)</span>';
+  else { c.textContent='Connected. Checking channel…'; try{ const g=await api('/api/google-channel'); c.innerHTML=g.channel?`Uploading to channel: <b>${esc(g.channel)}</b> · <a href="/oauth/start">reconnect</a>`:'Token expired. <a href="/oauth/start"><button class="go">Reconnect</button></a>'; }catch(e){ c.textContent=e.message } }
+  const w=await api('/api/workspace'); const cur=$('#pb-edit').value;
+  $('#pb-edit').innerHTML='<option value="">Select…</option>'+w.edits.map(e=>`<option value="${esc(e.name)}">${esc(e.name)}${e.final?'':' — no final video yet'}</option>`).join('');
+  if(cur) $('#pb-edit').value=cur;
+}
+$('#pb-edit').onchange=async e=>{
+  if(!e.target.value){ pbEdit=null; return }
+  pbEdit=await api('/api/edit?name='+encodeURIComponent(e.target.value)); const m=pbEdit.metadata;
+  $('#pb-file').innerHTML=pbEdit.final.length?pbEdit.final.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join(''):'<option value="">No video in final_edit yet</option>';
+  $('#pb-title').value=m.title; $('#pb-desc').value=m.description+(m.chapters?'\n\n'+m.chapters:''); $('#pb-tags').value=m.tags.join(', '); pbTagCount();
+  pbThumb=pbEdit.thumbnails[0]||null;
+  $('#pb-thumbs').innerHTML=`<figure style="width:120px"><label><input type="radio" name="pbt" value="" ${!pbThumb?'checked':''} style="min-width:0"> none</label></figure>`+
+    (pbEdit.thumbnails.map(f=>`<figure><label><input type="radio" name="pbt" value="${esc(f)}" ${pbThumb===f?'checked':''} style="min-width:0"><img src="/edit-file?name=${encodeURIComponent(pbEdit.name)}&file=${encodeURIComponent(f)}"></label>
+      <figcaption><a class="dl" href="/edit-file?name=${encodeURIComponent(pbEdit.name)}&file=${encodeURIComponent(f)}" download="${esc(f)}">⬇ Download</a></figcaption></figure>`).join('')||'<span class="meta">No thumbnail image in “thumbnail and metadata” yet.</span>');
+};
+document.addEventListener('change',e=>{ if(e.target.name==='pbt') pbThumb=e.target.value||null; });
+const pbTagCount=()=>{const t=$('#pb-tags').value.split(',').map(s=>s.trim()).filter(Boolean); $('#pb-tagc').textContent=`${t.length} tags · ${t.reduce((a,x)=>a+x.length+1+(x.includes(' ')?2:0),0)}/500 chars`};
+$('#pb-tags').oninput=pbTagCount;
+$('#pb-go').onclick=async()=>{
+  const b=$('#pb-go'); $('#pb-err').textContent='';
+  if(!pbEdit){ $('#pb-err').textContent='Choose an edit folder first.'; return }
+  if(!$('#pb-ok').checked){ $('#pb-err').textContent='Tick the confirmation box first.'; return }
+  const kids=$('#pb-kids').value; if(!kids){ $('#pb-err').textContent='Declare whether the video is made for kids.'; return }
+  busy(b,true,'Starting…');
+  try{
+    const at=$('#pb-at').value;
+    const d=await api('/api/publish',{confirm:true,edit:pbEdit.name,file:$('#pb-file').value,title:$('#pb-title').value,description:$('#pb-desc').value,
+      tags:$('#pb-tags').value.split(',').map(s=>s.trim()).filter(Boolean),thumbnail:pbThumb,privacy:$('#pb-priv').value,
+      categoryId:$('#pb-cat').value,madeForKids:kids==='yes',publishAt:at?new Date(at).toISOString():null});
+    $('#pb-prog').classList.remove('hide');
+    const tick=async()=>{
+      const j=await api('/api/publish/status?job='+d.job); $('#pb-bar').style.width=j.progress+'%';
+      if(j.state==='error'){ $('#pb-state').innerHTML=`<span class="err">Failed: ${esc(j.error)}</span>`; busy(b,false); return }
+      if(j.state==='done'){ $('#pb-state').innerHTML=`Uploaded ✓ <a href="${j.url}" target="_blank">${j.url}</a> · <a href="${j.studio}" target="_blank">Open in Studio</a>${j.thumbnailError?`<div class="err">Video uploaded but thumbnail failed: ${esc(j.thumbnailError)}</div>`:''}`; busy(b,false); $('#pb-ok').checked=false; return }
+      $('#pb-state').textContent=`${j.state}… ${j.progress}%`; setTimeout(tick,2000);
+    }; tick();
+  }catch(e){ $('#pb-err').textContent=e.message; busy(b,false) }
+};
+loadCfg();
+</script>
+</body>
+</html>
