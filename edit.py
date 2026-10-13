@@ -5,6 +5,8 @@
   python edit.py cut <video_folder>       apply approved cuts -> claude_assets/rough_cut.mp4
   python edit.py render <video_folder>    add user_assets overlays -> final_edit/final.mp4
 
+Add  --channel <id>  anywhere to work on a channel other than the first one (ids are in data/channels.json).
+
 <video_folder> is a folder name under data/edits (e.g. sample_video).
 Overlay files in user_assets are named  overlay_MM_SS[_LEN].ext  (e.g. overlay_05_25_20.png =
 full-frame at 5:25 for 20s; LEN optional: images default to 3s, videos play to their end).
@@ -15,7 +17,18 @@ import json, mimetypes, os, re, secrets, shutil, subprocess, sys, urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-EDITS = ROOT / "data" / "edits"
+
+
+def channel_edits(cid=None):
+    """data/channels/<id>/edits for the given channel id (default: the first channel in data/channels.json)."""
+    f = ROOT / "data" / "channels.json"
+    ids = [c["id"] for c in json.loads(f.read_text(encoding="utf-8"))] if f.exists() else []
+    if cid and ids and cid not in ids:
+        sys.exit(f"Unknown channel '{cid}'. Known: {', '.join(ids)}")
+    return ROOT / "data" / "channels" / (cid or (ids[0] if ids else "main")) / "edits"
+
+
+EDITS = channel_edits()
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".wmv"}
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 MIN_PAUSE = 0.8      # gaps between words longer than this are proposed as cuts
@@ -229,6 +242,10 @@ def cmd_render(name):
 
 if __name__ == "__main__":
     a = sys.argv[1:]
+    if "--channel" in a:
+        i = a.index("--channel")
+        EDITS = channel_edits(a[i + 1] if i + 1 < len(a) else None)
+        del a[i:i + 2]
     try:
         {"analyze": lambda: cmd_analyze(a[1]), "cut": lambda: cmd_cut(a[1]), "render": lambda: cmd_render(a[1]),
          "add-cut": lambda: cmd_add_cut(*a[1:5])}[a[0]]()

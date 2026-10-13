@@ -46,27 +46,7 @@ if errorlevel 1 (
 )
 echo [ok] Packages installed
 
-rem ---------- 3. Folder structure ----------
-echo.
-echo Creating folders...
-for %%D in (
-  "data\style_reference"
-  "data\master_assets"
-  "data\thumbs"
-  "data\projects"
-  "data\edits\sample_video\raw_video"
-  "data\edits\sample_video\claude_assets"
-  "data\edits\sample_video\user_assets"
-  "data\edits\sample_video\thumbnail and metadata"
-  "data\edits\sample_video\final_edit"
-) do if not exist %%D mkdir %%D
-echo [ok] data\style_reference     - put 1-5 videos whose editing style you like here
-echo [ok] data\master_assets       - your photos, logos, reusable assets
-echo [ok] data\edits\sample_video  - template: one folder per video you edit, with
-echo                                 raw_video, claude_assets, user_assets,
-echo                                 "thumbnail and metadata", final_edit
-
-rem ---------- 4. .env ----------
+rem ---------- 3. .env ----------
 echo.
 if exist ".env" (
   echo [ok] .env already exists - left unchanged
@@ -74,6 +54,21 @@ if exist ".env" (
   copy /y ".env.example" ".env" >nul
   echo [ok] Created .env from .env.example
 )
+
+rem ---------- 4. Folders ----------
+echo.
+echo Creating folders...
+rem server.py --init builds data\channels.json (from CHANNEL in .env, if set) and, per channel,
+rem data\channels\<id>\{style_reference, master_assets, edits, thumbs, projects}
+rem plus a sample_video template with raw_video, claude_assets, user_assets,
+rem "thumbnail and metadata" and final_edit. It also moves data from an older single-channel layout.
+%PY% server.py --init
+if errorlevel 1 (
+  echo [!!] Could not create the folders. See the message above.
+  if "%AUTO%"=="0" pause
+  exit /b 1
+)
+echo [ok] Folders ready. Add more channels later in the app: Settings - Channels.
 
 rem ---------- 5. Optional tools ----------
 echo.

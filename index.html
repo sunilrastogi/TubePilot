@@ -52,6 +52,7 @@ input.w,textarea.w,select.w{width:100%}.field{display:flex;flex-direction:column
 <body>
 <header>
   <h1>Channel <span>Lab</span></h1>
+  <select id="ch-switch" title="Active channel" style="min-width:150px;font-weight:600"></select>
   <nav>
     <button data-tab="channel" class="on">My channel</button>
     <button data-tab="video">Video analysis</button>
@@ -166,6 +167,13 @@ input.w,textarea.w,select.w{width:100%}.field{display:flex;flex-direction:column
 </section>
 
 <section id="tab-settings" class="hide">
+  <div class="card"><h2>Channels</h2>
+    <p class="meta">Each channel has its own handle, niche, Google sign-in and files (<code>data/channels/&lt;id&gt;/</code>: style reference, master assets, edits, thumbnails, projects). Switch channels with the menu at the top.</p>
+    <div id="s-channels"></div>
+    <h2 style="margin-top:16px;font-size:14px">Add a channel</h2>
+    <div class="row"><label>Name<input id="nc-name" placeholder="My cooking channel"></label><label>Handle<input id="nc-handle" placeholder="@handle"></label>
+      <label style="flex:1">Niche keywords<input id="nc-niche" class="w" placeholder="home cooking, meal prep"></label><button class="go" id="nc-add">Add channel</button></div>
+    <div class="err" id="nc-err"></div></div>
   <div class="card">
     <h2>Settings</h2>
     <p class="meta">Stored locally in <code>.env</code> next to server.py. Fields left blank keep their saved value.</p>
@@ -176,8 +184,6 @@ input.w,textarea.w,select.w{width:100%}.field{display:flex;flex-direction:column
       <label class="field">OpenAI API key (thumbnail generation) <span id="s-oa"></span><input id="s-oakey" type="password" class="w" placeholder="sk-..."></label>
       <label class="field">Google OAuth client ID (for publishing) <span id="s-gc"></span><input id="s-gcid" class="w"></label>
       <label class="field">Google OAuth client secret<input id="s-gcsec" type="password" class="w"></label>
-      <label class="field">Default channel handle<input id="s-ch" class="w" placeholder="@yourchannel"></label>
-      <label class="field">Your niche (default for ideas &amp; scripts)<input id="s-niche" class="w" placeholder="home coffee brewing"></label>
       <div><button class="go" id="s-save">Save</button> <span id="s-msg" class="tag"></span></div>
     </div>
     <p class="meta"><b>YouTube key:</b> Google Cloud Console → enable "YouTube Data API v3" → Credentials → API key.<br>
@@ -195,12 +201,29 @@ const dur=s=>s>=3600?`${Math.floor(s/3600)}:${String(Math.floor(s%3600/60)).padS
 let cfg={}, lastChannel=null, lastTrends=null, charts=[];
 const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
+let CH=''; try{ CH=localStorage.getItem('ch')||'' }catch(e){}
 async function api(path,body){
-  const r=await fetch(path,body?{method:'POST',body:JSON.stringify(body)}:{});
+  const H={'X-Channel':CH};
+  const r=await fetch(path,body?{method:'POST',body:JSON.stringify(body),headers:H}:{headers:H});
   const j=await r.json(); if(!r.ok) throw new Error(j.error||r.statusText); return j;
 }
 function busy(btn,on,txt){btn.disabled=on; if(on){btn.dataset.t=btn.textContent;btn.textContent=txt||'Working…'}else btn.textContent=btn.dataset.t||btn.textContent}
 
+$('#ch-switch').onchange=e=>{ try{ localStorage.setItem('ch',e.target.value) }catch(_){} location.reload(); };
+function renderChannels(){
+  $('#s-channels').innerHTML=cfg.channels.map(c=>`<div class="row" style="margin-bottom:8px" data-chid="${esc(c.id)}">
+    <label>Name<input class="cn" value="${esc(c.name)}"></label><label>Handle<input class="chh" value="${esc(c.handle)}" placeholder="@handle"></label>
+    <label style="flex:1">Niche keywords<input class="cnn w" value="${esc(c.niche)}"></label>
+    <button class="ghost" data-chsave="${esc(c.id)}">Save</button><button class="ghost" data-chdel="${esc(c.id)}">Remove</button></div>`).join('');
+}
+document.addEventListener('click',async e=>{
+  const sv=e.target.closest('[data-chsave]'), dl=e.target.closest('[data-chdel]');
+  try{
+    if(sv){ const r=sv.closest('[data-chid]'); await api('/api/channels',{id:sv.dataset.chsave,name:r.querySelector('.cn').value,handle:r.querySelector('.chh').value,niche:r.querySelector('.cnn').value}); await loadCfg(); }
+    if(dl && confirm('Remove this channel from the list? Its files in data/channels/'+dl.dataset.chdel+' are kept on disk.')){ await api('/api/channels/delete',{id:dl.dataset.chdel}); if(CH===dl.dataset.chdel){ CH=''; try{localStorage.removeItem('ch')}catch(_){} } location.reload(); }
+  }catch(err){ $('#nc-err').textContent=err.message }
+});
+$('#nc-add').onclick=async()=>{ try{ const d=await api('/api/channels',{name:$('#nc-name').value,handle:$('#nc-handle').value,niche:$('#nc-niche').value}); try{ localStorage.setItem('ch',d.id) }catch(_){} location.reload(); }catch(e){ $('#nc-err').textContent=e.message } };
 function showTab(name){
   $$('nav button').forEach(x=>x.classList.toggle('on',x.dataset.tab===name));
   $$('main>section').forEach(s=>s.classList.toggle('hide',s.id!=='tab-'+name));
@@ -211,18 +234,21 @@ $$('nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
 
 async function loadCfg(){
   cfg=await api('/api/config');
+  if(!cfg.channels.some(c=>c.id===CH)){ CH=cfg.activeChannel; try{ localStorage.setItem('ch',CH) }catch(e){} }
+  $('#ch-switch').innerHTML=cfg.channels.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join(''); $('#ch-switch').value=CH;
+  document.title='Channel Lab · '+cfg.channelName; renderChannels();
   const m=(l,ok)=>`${l} ${ok?'✓':'✗'}`;
   $('#status').textContent=[m('YouTube',cfg.youtube),m('Claude'+(cfg.claudeMode==='cli'?' (login)':''),cfg.anthropic),m('OpenAI',cfg.openai),m('Upload',cfg.googleConnected)].join('  ·  ');
   const sv=(id,ok)=>$(id).textContent=ok?'(saved ✓)':'';
   sv('#s-yt',cfg.youtube); sv('#s-an',cfg.claudeMode==='api');
   $('#s-claude').innerHTML=cfg.claudeMode==='api'?'Claude: using your Anthropic API key.':cfg.claudeMode==='cli'?'Claude: using your Claude login through the <code>claude</code> CLI (no API key needed). If you see “not logged in”, open a terminal, run <code>claude</code> and type <code>/login</code> once.':'Claude: not available — install Claude Code or add an API key.'; sv('#s-oa',cfg.openai); sv('#s-gc',cfg.googleClient);
-  $('#ch-handle').value ||= cfg.channel; $('#s-ch').value ||= cfg.channel;
-  $('#s-niche').value ||= cfg.niche; $('#sc-niche').value ||= cfg.niche;
+  $('#ch-handle').value=cfg.channel;
+  $('#sc-niche').value=cfg.niche; $('#nx-q').placeholder=cfg.niche||'defaults to this channel\'s niche or your top title words';
   if(!cfg.youtube) showTab('settings'); else if(location.hash.length>1) showTab(location.hash.slice(1));
 }
 $('#s-save').onclick=async()=>{
   await api('/api/settings',{YOUTUBE_API_KEY:$('#s-ytkey').value,ANTHROPIC_API_KEY:$('#s-ankey').value,OPENAI_API_KEY:$('#s-oakey').value,
-    GOOGLE_CLIENT_ID:$('#s-gcid').value,GOOGLE_CLIENT_SECRET:$('#s-gcsec').value,CHANNEL:$('#s-ch').value,NICHE:$('#s-niche').value});
+    GOOGLE_CLIENT_ID:$('#s-gcid').value,GOOGLE_CLIENT_SECRET:$('#s-gcsec').value});
   ['#s-ytkey','#s-ankey','#s-oakey','#s-gcid','#s-gcsec'].forEach(i=>$(i).value='');
   $('#s-msg').textContent='Saved'; setTimeout(()=>$('#s-msg').textContent='',2000); loadCfg();
 };
@@ -536,7 +562,8 @@ async function loadPublish(){
   const c=$('#pb-conn');
   if(!cfg.googleClient) c.innerHTML='Add your Google OAuth client ID &amp; secret in <a href="#settings" onclick="showTab(\'settings\')">Settings</a> first.';
   else if(!cfg.googleConnected) c.innerHTML='Not connected. <a href="/oauth/start"><button class="go">Connect Google account</button></a> <span class="meta">(sign in with the account that owns your channel)</span>';
-  else { c.textContent='Connected. Checking channel…'; try{ const g=await api('/api/google-channel'); c.innerHTML=g.channel?`Uploading to channel: <b>${esc(g.channel)}</b> · <a href="/oauth/start">reconnect</a>`:'Token expired. <a href="/oauth/start"><button class="go">Reconnect</button></a>'; }catch(e){ c.textContent=e.message } }
+  else { c.textContent='Connected. Checking channel…'; try{ const g=await api('/api/google-channel'); c.innerHTML=g.channel?`Uploading to YouTube channel <b>${esc(g.channel)}</b> (Channel Lab profile: ${esc(cfg.channelName)}) · <a href="/oauth/start">reconnect</a>`:'Token expired. <a href="/oauth/start"><button class="go">Reconnect</button></a>'; }catch(e){ c.textContent=e.message } }
+  c.querySelectorAll('a[href="/oauth/start"]').forEach(a=>a.href='/oauth/start?ch='+encodeURIComponent(CH));
   const w=await api('/api/workspace'); const cur=$('#pb-edit').value;
   $('#pb-edit').innerHTML='<option value="">Select…</option>'+w.edits.map(e=>`<option value="${esc(e.name)}">${esc(e.name)}${e.final?'':' — no final video yet'}</option>`).join('');
   if(cur) $('#pb-edit').value=cur;
@@ -548,8 +575,8 @@ $('#pb-edit').onchange=async e=>{
   $('#pb-title').value=m.title; $('#pb-desc').value=m.description+(m.chapters?'\n\n'+m.chapters:''); $('#pb-tags').value=m.tags.join(', '); pbTagCount();
   pbThumb=pbEdit.thumbnails[0]||null;
   $('#pb-thumbs').innerHTML=`<figure style="width:120px"><label><input type="radio" name="pbt" value="" ${!pbThumb?'checked':''} style="min-width:0"> none</label></figure>`+
-    (pbEdit.thumbnails.map(f=>`<figure><label><input type="radio" name="pbt" value="${esc(f)}" ${pbThumb===f?'checked':''} style="min-width:0"><img src="/edit-file?name=${encodeURIComponent(pbEdit.name)}&file=${encodeURIComponent(f)}"></label>
-      <figcaption><a class="dl" href="/edit-file?name=${encodeURIComponent(pbEdit.name)}&file=${encodeURIComponent(f)}" download="${esc(f)}">⬇ Download</a></figcaption></figure>`).join('')||'<span class="meta">No thumbnail image in “thumbnail and metadata” yet.</span>');
+    (pbEdit.thumbnails.map(f=>`<figure><label><input type="radio" name="pbt" value="${esc(f)}" ${pbThumb===f?'checked':''} style="min-width:0"><img src="/edit-file?name=${encodeURIComponent(pbEdit.name)}&file=${encodeURIComponent(f)}&ch=${encodeURIComponent(CH)}"></label>
+      <figcaption><a class="dl" href="/edit-file?name=${encodeURIComponent(pbEdit.name)}&file=${encodeURIComponent(f)}&ch=${encodeURIComponent(CH)}" download="${esc(f)}">⬇ Download</a></figcaption></figure>`).join('')||'<span class="meta">No thumbnail image in “thumbnail and metadata” yet.</span>');
 };
 document.addEventListener('change',e=>{ if(e.target.name==='pbt') pbThumb=e.target.value||null; });
 const pbTagCount=()=>{const t=$('#pb-tags').value.split(',').map(s=>s.trim()).filter(Boolean); $('#pb-tagc').textContent=`${t.length} tags · ${t.reduce((a,x)=>a+x.length+1+(x.includes(' ')?2:0),0)}/500 chars`};

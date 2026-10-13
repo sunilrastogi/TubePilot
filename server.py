@@ -4,7 +4,7 @@ Run:  python server.py   ->  http://127.0.0.1:8791
 Keys live in .env (YOUTUBE_API_KEY, ANTHROPIC_API_KEY, CHANNEL).
 """
 import base64, http.client, io, json, mimetypes, os, re, secrets, threading, time, hashlib, statistics
-import shutil, subprocess, tempfile
+import shutil, subprocess, sys, tempfile
 import urllib.request, urllib.parse, urllib.error
 from collections import Counter
 from datetime import datetime, timezone, timedelta
@@ -16,13 +16,37 @@ ENV_PATH = ROOT / ".env"
 CACHE_DIR = ROOT / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 DATA = ROOT / "data"
-THUMBS, PROJECTS = DATA / "thumbs", DATA / "projects"
-EDITS, STYLE_DIR, MASTER = DATA / "edits", DATA / "style_reference", DATA / "master_assets"
+CHANNELS_F = DATA / "channels.json"
+CH_SUBS = ("style_reference", "master_assets", "edits", "thumbs", "projects")  # per-channel folders under data/channels/<id>/
+CTX = threading.local()  # the channel a request (or background job) is working for
+
+
+class ChPath:
+    """A path inside the ACTIVE channel's folder, resolved on every use, so code can keep writing EDITS / name, MASTER.rglob(...), TOKENS.exists() ..."""
+    def __init__(self, sub):
+        self.sub = sub
+
+    def _p(self):
+        return DATA / "channels" / cur_id() / self.sub
+
+    def __truediv__(self, other):
+        return self._p() / other
+
+    def __fspath__(self):
+        return str(self._p())
+
+    def __str__(self):
+        return str(self._p())
+
+    def __getattr__(self, name):  # resolve(), iterdir(), glob(), exists(), read_text() ...
+        return getattr(self._p(), name)
+
+
+THUMBS, PROJECTS = ChPath("thumbs"), ChPath("projects")
+EDITS, STYLE_DIR, MASTER = ChPath("edits"), ChPath("style_reference"), ChPath("master_assets")
 SUBS = ("raw_video", "claude_assets", "user_assets", "thumbnail and metadata", "final_edit")  # one set per folder in data/edits
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp"}
-for _d in (THUMBS, PROJECTS, EDITS, STYLE_DIR, MASTER):
-    _d.mkdir(parents=True, exist_ok=True)
-TOKENS = DATA / "tokens.json"
+TOKENS = ChPath("tokens.json")  # each channel signs in with its own Google account
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".wmv"}
 CACHE_TTL = 3600  # seconds; protects the 10k units/day YouTube quota
 CLAUDE_MODEL = "claude-sonnet-5-5"
@@ -49,6 +73,95 @@ def save_env(updates):
     env = load_env()
     env.update({k: v for k, v in updates.items() if v is not None})
     ENV_PATH.write_text("\n".join(f"{k}={v}" for k, v in env.items()) + "\n", encoding="utf-8")
+
+
+# ---------- channels ----------
+def load_channels():
+    return json.loads(CHANNELS_F.read_text(encoding="utf-8")) if CHANNELS_F.exists() else []
+
+
+def save_channels(chans):
+    CHANNELS_F.write_text(json.dumps(chans, indent=2), encoding="utf-8")
+
+
+def slugify(s):
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:30] or "channel"
+
+
+def cur_id():
+    chans = load_channels() or migrate_legacy()
+    ids = [c["id"] for c in chans]
+    ch = getattr(CTX, "ch", None)
+    return ch if ch in ids else ids[0]
+
+
+def active_channel():
+    cid = cur_id()
+    return next(c for c in load_channels() if c["id"] == cid)
+
+
+def ensure_channel(cid, sample=False):
+    base = DATA / "channels" / cid
+    for sub in CH_SUBS:
+        (base / sub).mkdir(parents=True, exist_ok=True)
+    if sample and not any((base / "edits").iterdir()):  # template folder showing the per-video layout
+        for sub in SUBS:
+            (base / "edits" / "sample_video" / sub).mkdir(parents=True, exist_ok=True)
+
+
+def migrate_legacy():
+    """First run: build the channel list from .env and move the old single-channel data/ folders into the first channel."""
+    chans = load_channels()
+    if not chans:
+        env = load_env()
+        handle = env.get("CHANNEL", "")
+        name = handle.lstrip("@") or "My channel"
+        chans = [{"id": slugify(name), "name": name, "handle": handle, "niche": env.get("NICHE", "")}]
+        save_channels(chans)
+    base = DATA / "channels" / chans[0]["id"]
+    base.mkdir(parents=True, exist_ok=True)
+    for sub in CH_SUBS + ("tokens.json",):
+        old, new = DATA / sub, base / sub
+        if old.exists() and not new.exists():
+            shutil.move(str(old), str(new))
+    for c in chans:
+        ensure_channel(c["id"], sample=(c["id"] == chans[0]["id"]))
+    return chans
+
+
+def channels_info():
+    return {"channels": load_channels(), "active": cur_id()}
+
+
+def upsert_channel(b):
+    name, handle, niche = (b.get("name") or "").strip(), (b.get("handle") or "").strip(), (b.get("niche") or "").strip()
+    if not name:
+        raise ApiError("Give the channel a name.")
+    if handle and not handle.startswith("@") and not handle.startswith("UC"):
+        handle = "@" + handle
+    chans = load_channels()
+    c = next((x for x in chans if x["id"] == b.get("id")), None)
+    if c:
+        c.update(name=name, handle=handle, niche=niche)
+    else:
+        ids = {x["id"] for x in chans}
+        cid, n = slugify(name), 2
+        while cid in ids:
+            cid, n = f"{slugify(name)}-{n}", n + 1
+        c = {"id": cid, "name": name, "handle": handle, "niche": niche}
+        chans.append(c)
+        ensure_channel(cid, sample=True)
+    save_channels(chans)
+    return {"id": c["id"], **channels_info()}
+
+
+def delete_channel(b):
+    """Removes the channel from the list only; its folder under data/channels/ is left on disk."""
+    chans = load_channels()
+    if len(chans) <= 1:
+        raise ApiError("You need at least one channel.")
+    save_channels([c for c in chans if c["id"] != b.get("id")])
+    return channels_info()
 
 
 # ---------- http helpers ----------
@@ -138,7 +251,7 @@ def keywords(videos, n=15, weight="views"):
 
 # ---------- 1. channel analysis ----------
 def channel_analysis(handle, count=50):
-    handle = (handle or load_env().get("CHANNEL", "")).strip()
+    handle = (handle or active_channel().get("handle", "")).strip()
     if not handle:
         raise ApiError("Enter your channel handle (e.g. @mychannel) or channel ID.")
     if "youtube.com/" in handle:
@@ -492,7 +605,7 @@ def video_detail(vid_input):
 def next_videos(p):
     ch = channel_analysis(p.get("handle"), 50)
     default_q = ", ".join(k["term"] for k in ch["keywords"] if " " not in k["term"])[:80]
-    q = ", ".join([t.strip() for t in (p.get("q") or load_env().get("NICHE") or default_q).split(",") if t.strip()][:2])
+    q = ", ".join([t.strip() for t in (p.get("q") or active_channel().get("niche") or default_q).split(",") if t.strip()][:2])
     tr = trends(q, 14, p.get("region") or "US", 25)
     own = lambda v: {"title": v["title"], "views": v["views"], "x_median": v["vsMedian"], "minutes": round(v["duration"] / 60, 1)}
     payload = {"channel": {"name": ch["channel"]["title"], "subs": ch["channel"]["subs"], "summary": ch["summary"], "insights": ch["insights"],
@@ -603,7 +716,7 @@ def gen_thumbnail(b):
     raw = to_16x9_jpeg(base64.b64decode(r["data"][0]["b64_json"]))
     name = f"{int(time.time())}_{hashlib.md5(raw).hexdigest()[:6]}.jpg"
     (THUMBS / name).write_bytes(raw)
-    return {"name": name, "url": f"/thumbs/{name}", "prompt": used, "directed": directed, "quality": quality}
+    return {"name": name, "url": f"/thumbs/{name}?ch={cur_id()}", "prompt": used, "directed": directed, "quality": quality}
 
 
 # ---------- projects ----------
@@ -631,7 +744,7 @@ def project_list():
 
 # ---------- publish (YouTube OAuth + resumable upload) ----------
 SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
-OAUTH_STATE = {"v": None}
+OAUTH_STATE = {"v": None, "ch": None}
 JOBS = {}
 CHUNK = 32 * 262144  # 8 MB, must be a multiple of 256 KB
 
@@ -645,6 +758,7 @@ def oauth_url(redirect):
     if not cid:
         raise ApiError("Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Settings first.")
     OAUTH_STATE["v"] = secrets.token_urlsafe(16)
+    OAUTH_STATE["ch"] = cur_id()
     return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
         "client_id": cid, "redirect_uri": redirect, "response_type": "code", "scope": SCOPES,
         "access_type": "offline", "prompt": "consent", "state": OAUTH_STATE["v"]})
@@ -653,7 +767,7 @@ def oauth_url(redirect):
 def oauth_callback(code, state, redirect):
     if not state or state != OAUTH_STATE["v"]:
         raise ApiError("OAuth state mismatch; start the connection again.")
-    OAUTH_STATE["v"] = None
+    OAUTH_STATE["v"], CTX.ch = None, OAUTH_STATE["ch"]  # tokens are saved for the channel that started the sign-in
     env = load_env()
     t = http_form("https://oauth2.googleapis.com/token", {"code": code, "client_id": env.get("GOOGLE_CLIENT_ID"),
                   "client_secret": env.get("GOOGLE_CLIENT_SECRET"), "redirect_uri": redirect, "grant_type": "authorization_code"})
@@ -698,8 +812,10 @@ def start_job(label, fn):
     """Run a long task in a thread; the UI polls /api/publish/status?job=<id> for progress."""
     jid = secrets.token_hex(4)
     job = JOBS[jid] = {"state": "running", "progress": 0, "msg": label, "label": label}
+    ch = cur_id()
 
     def run():
+        CTX.ch = ch
         try:
             job["result"] = fn(job)
             job.update(state="done", progress=100)
@@ -1061,7 +1177,7 @@ def run_upload(job, token, path, meta, thumb):
 
 
 # ---------- server ----------
-SETTINGS_KEYS = ("YOUTUBE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "CHANNEL", "NICHE")
+SETTINGS_KEYS = ("YOUTUBE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1092,6 +1208,10 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def pick_channel(self, q=None):
+        CTX.ch = (q or {}).get("ch") or self.headers.get("X-Channel")
+        ensure_channel(cur_id())
+
     def route(self, fn):
         try:
             self.send(200, fn())
@@ -1105,6 +1225,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         u = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
+        self.pick_channel(q)
         redirect_uri = f"http://{self.headers.get('Host')}/oauth/callback"
         if u.path == "/":
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
@@ -1146,13 +1267,15 @@ class Handler(BaseHTTPRequestHandler):
             e = load_env()
             return self.send(200, {"youtube": bool(e.get("YOUTUBE_API_KEY")), "anthropic": claude_mode() is not None, "claudeMode": claude_mode(),
                                    "openai": bool(e.get("OPENAI_API_KEY")), "googleClient": bool(e.get("GOOGLE_CLIENT_ID") and e.get("GOOGLE_CLIENT_SECRET")),
-                                   "googleConnected": TOKENS.exists(), "channel": e.get("CHANNEL", ""), "niche": e.get("NICHE", "")})
+                                   "googleConnected": TOKENS.exists(), "channel": active_channel()["handle"], "niche": active_channel()["niche"], "channelName": active_channel()["name"],
+                                   "channels": load_channels(), "activeChannel": cur_id()})
         routes = {
             "/api/channel": lambda: channel_analysis(q.get("handle"), int(q.get("count", 50))),
             "/api/trends": lambda: trends(q.get("q", ""), q.get("days", 7), q.get("region", "US"), q.get("max", 30), q.get("order", "viewCount")),
             "/api/video": lambda: video_detail(q.get("id", "")),
             "/api/projects": project_list,
             "/api/project": lambda: project_load(q.get("id")),
+            "/api/channels": channels_info,
             "/api/workspace": list_edits,
             "/api/edit": lambda: edit_detail(q.get("name")),
             "/api/md": lambda: md_text(q.get("which"), q.get("edit")),
@@ -1167,11 +1290,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard(post=True):
             return
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        self.pick_channel()
         if self.path == "/api/settings":
             save_env({k: body[k].strip() for k in SETTINGS_KEYS if body.get(k, "").strip()})
             return self.send(200, {"ok": True})
         routes = {"/api/script": make_script, "/api/next-videos": next_videos, "/api/package": build_package,
                   "/api/thumbnail": gen_thumbnail, "/api/project": project_save, "/api/publish": start_publish,
+                  "/api/channels": upsert_channel, "/api/channels/delete": delete_channel,
                   "/api/edit/create": edit_create, "/api/edit/export": edit_export, "/api/edit/plan": edit_plan,
                   "/api/style/build": lambda b: start_job("Building style.md", build_style),
                   "/api/assets/index": lambda b: start_job("Indexing master assets", index_master_assets)}
@@ -1181,6 +1306,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    migrate_legacy()
+    if "--init" in sys.argv:  # used by setup.bat: create the channel list and folder skeleton, then exit
+        for c in load_channels():
+            print(f"channel '{c['name']}': {DATA / 'channels' / c['id']}")
+        sys.exit(0)
     port = int(os.environ.get("PORT", 8791))
     print(f"YouTube research utility -> http://127.0.0.1:{port}")
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

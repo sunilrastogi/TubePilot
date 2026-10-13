@@ -7,8 +7,6 @@ data/tokens.json
 __pycache__/
 *.pyc
 
-# Everything inside data/ is personal (videos, photos, projects, generated files).
-# Only the folder skeleton (.gitkeep) is tracked.
-/data/**
-!/data/**/
-!/data/**/.gitkeep
+# Everything inside data/ is personal (channels, videos, photos, projects, generated files, sign-in tokens).
+# setup.bat / server.py --init create the folder structure.
+/data/
