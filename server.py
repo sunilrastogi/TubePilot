@@ -164,6 +164,72 @@ def delete_channel(b):
     return channels_info()
 
 
+# ---------- YouTube quota tracker ----------
+# The YouTube API cannot report remaining quota, so units are counted locally using Google's published costs.
+# Quota belongs to the Google Cloud project (the API key), so it is shared by all channels, and resets at midnight Pacific time.
+QUOTA_F = DATA / "quota.json"
+QUOTA_LOCK = threading.Lock()
+YT_COST = {"search": 100, "videos": 1, "channels": 1, "playlistItems": 1}
+
+
+def _nth_sunday(year, month, n):
+    first = datetime(year, month, 1)
+    return first + timedelta(days=(6 - first.weekday()) % 7, weeks=n - 1)
+
+
+def pt_offset(utc):
+    """US Pacific offset from UTC (DST: 2nd Sunday of March 02:00 PST to 1st Sunday of November 02:00 PDT)."""
+    start = _nth_sunday(utc.year, 3, 2).replace(hour=10, tzinfo=timezone.utc)
+    end = _nth_sunday(utc.year, 11, 1).replace(hour=9, tzinfo=timezone.utc)
+    return timedelta(hours=-7 if start <= utc < end else -8)
+
+
+def quota_limit():
+    try:
+        return max(int(load_env().get("YT_QUOTA_LIMIT") or 10000), 1)
+    except ValueError:
+        return 10000
+
+
+def _quota_load():
+    now = datetime.now(timezone.utc)
+    today = (now + pt_offset(now)).strftime("%Y-%m-%d")
+    try:
+        q = json.loads(QUOTA_F.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        q = {}
+    if q.get("date") != today:
+        q = {"date": today, "used": 0, "by": {}}
+    return q
+
+
+def quota_add(label, units):
+    with QUOTA_LOCK:
+        q = _quota_load()
+        q["used"] += units
+        q["by"][label] = q["by"].get(label, 0) + units
+        QUOTA_F.write_text(json.dumps(q), encoding="utf-8")
+
+
+def quota_exhausted():
+    """Google said the quota is gone: sync the counter to the limit for today."""
+    with QUOTA_LOCK:
+        q = _quota_load()
+        q["used"] = max(q["used"], quota_limit())
+        QUOTA_F.write_text(json.dumps(q), encoding="utf-8")
+
+
+def quota_info():
+    with QUOTA_LOCK:
+        q = _quota_load()
+    now = datetime.now(timezone.utc)
+    local = now + pt_offset(now)
+    reset = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) - pt_offset(now)
+    limit = quota_limit()
+    return {"used": q["used"], "limit": limit, "remaining": max(limit - q["used"], 0), "by": q["by"],
+            "resetsInMin": int((reset.replace(tzinfo=timezone.utc) - now).total_seconds() // 60), "date": q["date"]}
+
+
 # ---------- http helpers ----------
 class ApiError(Exception):
     def __init__(self, msg, status=400):
@@ -198,7 +264,13 @@ def yt_get(endpoint, **params):
     cache_file = CACHE_DIR / (hashlib.md5((endpoint + json.dumps(params, sort_keys=True)).encode()).hexdigest() + ".json")
     if cache_file.exists() and time.time() - cache_file.stat().st_mtime < CACHE_TTL:
         return json.loads(cache_file.read_text(encoding="utf-8"))
-    data = http_json(YT + endpoint + "?" + urllib.parse.urlencode({**params, "key": key}))
+    try:
+        data = http_json(YT + endpoint + "?" + urllib.parse.urlencode({**params, "key": key}))
+    except ApiError as e:
+        if "quota" in str(e).lower():
+            quota_exhausted()
+        raise
+    quota_add(endpoint, YT_COST.get(endpoint, 1))
     cache_file.write_text(json.dumps(data), encoding="utf-8")
     return data
 
@@ -1131,6 +1203,7 @@ def run_upload(job, token, path, meta, thumb):
                 loc = r.headers["Location"]
         except urllib.error.HTTPError as e:
             raise ApiError(f"YouTube rejected the upload request: {e.read().decode()[:300]}")
+        quota_add("upload", 1600)
         u, pos, job["state"], result = urllib.parse.urlparse(loc), 0, "uploading", None
         with open(path, "rb") as f:
             while result is None:
@@ -1167,6 +1240,7 @@ def run_upload(job, token, path, meta, thumb):
                                              data=thumb.read_bytes(), method="POST",
                                              headers={"Authorization": f"Bearer {token}", "Content-Type": mimetypes.guess_type(thumb.name)[0] or "image/jpeg"})
                 urllib.request.urlopen(req, timeout=120).read()
+                quota_add("thumbnail", 50)
             except urllib.error.HTTPError as e:
                 job["thumbnailError"] = e.read().decode()[:300]
         job["state"] = "done"
@@ -1177,7 +1251,7 @@ def run_upload(job, token, path, meta, thumb):
 
 
 # ---------- server ----------
-SETTINGS_KEYS = ("YOUTUBE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")
+SETTINGS_KEYS = ("YOUTUBE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "YT_QUOTA_LIMIT")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1268,7 +1342,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {"youtube": bool(e.get("YOUTUBE_API_KEY")), "anthropic": claude_mode() is not None, "claudeMode": claude_mode(),
                                    "openai": bool(e.get("OPENAI_API_KEY")), "googleClient": bool(e.get("GOOGLE_CLIENT_ID") and e.get("GOOGLE_CLIENT_SECRET")),
                                    "googleConnected": TOKENS.exists(), "channel": active_channel()["handle"], "niche": active_channel()["niche"], "channelName": active_channel()["name"],
-                                   "channels": load_channels(), "activeChannel": cur_id()})
+                                   "channels": load_channels(), "activeChannel": cur_id(), "quotaLimit": quota_limit()})
         routes = {
             "/api/channel": lambda: channel_analysis(q.get("handle"), int(q.get("count", 50))),
             "/api/trends": lambda: trends(q.get("q", ""), q.get("days", 7), q.get("region", "US"), q.get("max", 30), q.get("order", "viewCount")),
@@ -1276,6 +1350,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/projects": project_list,
             "/api/project": lambda: project_load(q.get("id")),
             "/api/channels": channels_info,
+            "/api/quota": quota_info,
             "/api/workspace": list_edits,
             "/api/edit": lambda: edit_detail(q.get("name")),
             "/api/md": lambda: md_text(q.get("which"), q.get("edit")),

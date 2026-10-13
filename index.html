@@ -46,6 +46,7 @@ input.w,textarea.w,select.w{width:100%}.field{display:flex;flex-direction:column
 .bar{height:10px;background:var(--bg);border-radius:6px;overflow:hidden}.bar i{display:block;height:100%;background:var(--good);width:0}
 .blk textarea{min-height:90px}.blk .ts{color:var(--acc);font-weight:700;font-family:ui-monospace,Consolas,monospace}
 .gi{margin-top:8px}.gi img{margin-top:0!important}.dl{display:inline-block;margin-top:4px;font-size:13px;color:var(--acc2);font-weight:600;text-decoration:none}
+.qbar{width:80px;height:6px;background:var(--line);border-radius:4px;overflow:hidden}.qbar i{display:block;height:100%;background:var(--good)}.qlow i{background:var(--acc)}
 .warn{background:color-mix(in srgb,var(--acc) 10%,transparent);border-radius:8px;padding:10px 12px;font-size:13px;margin:8px 0}
 </style>
 </head>
@@ -63,6 +64,7 @@ input.w,textarea.w,select.w{width:100%}.field{display:flex;flex-direction:column
     <button data-tab="publish">Publish</button>
     <button data-tab="settings">Settings</button>
   </nav>
+  <div id="quota" class="meta" style="display:flex;align-items:center;gap:8px" title="Counted locally from this app's calls (YouTube has no quota endpoint). Resets at midnight Pacific time."></div>
   <small class="meta" id="status"></small>
 </header>
 <main>
@@ -158,7 +160,7 @@ input.w,textarea.w,select.w{width:100%}.field{display:flex;flex-direction:column
       <label>Made for kids?<select id="pb-kids"><option value="">Select…</option><option value="no">No</option><option value="yes">Yes</option></select></label>
       <label>Schedule (private only, optional)<input id="pb-at" type="datetime-local"></label>
     </div>
-    <div class="warn">Uploading costs 1,600 YouTube quota units (about 6 uploads per day on the free quota). Projects whose Google Cloud app is unverified may be forced to <b>private</b> by YouTube regardless of this setting.</div>
+    <div class="warn">Uploading costs 1,600 YouTube quota units (about 6 uploads per day on the free quota). <span id="pb-quota"></span> Projects whose Google Cloud app is unverified may be forced to <b>private</b> by YouTube regardless of this setting.</div>
     <label style="display:block;margin:8px 0"><input type="checkbox" id="pb-ok" style="min-width:0"> I confirm I want to upload this file to my channel with these details.</label>
     <button class="go" id="pb-go">Upload to YouTube</button>
     <div id="pb-err" class="err"></div>
@@ -182,6 +184,7 @@ input.w,textarea.w,select.w{width:100%}.field{display:flex;flex-direction:column
       <div class="meta" id="s-claude" style="margin-bottom:10px"></div>
       <label class="field">Anthropic API key — optional; leave blank to use your Claude login via the <code>claude</code> CLI <span id="s-an"></span><input id="s-ankey" type="password" class="w" placeholder="sk-ant-..."></label>
       <label class="field">OpenAI API key (thumbnail generation) <span id="s-oa"></span><input id="s-oakey" type="password" class="w" placeholder="sk-..."></label>
+      <label class="field">Daily YouTube quota limit — only change if Google raised yours (default 10000)<input id="s-qlim" class="w" type="number" placeholder="10000"></label>
       <label class="field">Google OAuth client ID (for publishing) <span id="s-gc"></span><input id="s-gcid" class="w"></label>
       <label class="field">Google OAuth client secret<input id="s-gcsec" type="password" class="w"></label>
       <div><button class="go" id="s-save">Save</button> <span id="s-msg" class="tag"></span></div>
@@ -204,7 +207,7 @@ const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim
 let CH=''; try{ CH=localStorage.getItem('ch')||'' }catch(e){}
 async function api(path,body){
   const H={'X-Channel':CH};
-  const r=await fetch(path,body?{method:'POST',body:JSON.stringify(body),headers:H}:{headers:H});
+  const r=await fetch(path,body?{method:'POST',body:JSON.stringify(body),headers:H}:{headers:H}); qSoon();
   const j=await r.json(); if(!r.ok) throw new Error(j.error||r.statusText); return j;
 }
 function busy(btn,on,txt){btn.disabled=on; if(on){btn.dataset.t=btn.textContent;btn.textContent=txt||'Working…'}else btn.textContent=btn.dataset.t||btn.textContent}
@@ -224,6 +227,17 @@ document.addEventListener('click',async e=>{
   }catch(err){ $('#nc-err').textContent=err.message }
 });
 $('#nc-add').onclick=async()=>{ try{ const d=await api('/api/channels',{name:$('#nc-name').value,handle:$('#nc-handle').value,niche:$('#nc-niche').value}); try{ localStorage.setItem('ch',d.id) }catch(_){} location.reload(); }catch(e){ $('#nc-err').textContent=e.message } };
+let qTimer=null;
+function qSoon(){ clearTimeout(qTimer); qTimer=setTimeout(refreshQuota,700); }
+async function refreshQuota(){
+  try{
+    const q=await (await fetch('/api/quota',{headers:{'X-Channel':CH}})).json(); window._quota=q;
+    const pct=Math.max(0,Math.min(100,q.remaining/q.limit*100)), t=q.resetsInMin>=60?`${Math.floor(q.resetsInMin/60)}h ${q.resetsInMin%60}m`:`${q.resetsInMin}m`;
+    $('#quota').innerHTML=`<span>YouTube quota: <b>${q.remaining.toLocaleString()}</b> / ${q.limit.toLocaleString()} left</span><div class="qbar ${pct<10?'qlow':''}"><i style="width:${pct}%"></i></div><span>resets in ${t}</span>`;
+    const pq=$('#pb-quota'); if(pq) pq.textContent=` You have ${q.remaining.toLocaleString()} units left today${q.remaining<1650?' — not enough for an upload until the quota resets.':'.'}`;
+  }catch(e){}
+}
+setInterval(refreshQuota,30000);
 function showTab(name){
   $$('nav button').forEach(x=>x.classList.toggle('on',x.dataset.tab===name));
   $$('main>section').forEach(s=>s.classList.toggle('hide',s.id!=='tab-'+name));
@@ -239,6 +253,7 @@ async function loadCfg(){
   document.title='Channel Lab · '+cfg.channelName; renderChannels();
   const m=(l,ok)=>`${l} ${ok?'✓':'✗'}`;
   $('#status').textContent=[m('YouTube',cfg.youtube),m('Claude'+(cfg.claudeMode==='cli'?' (login)':''),cfg.anthropic),m('OpenAI',cfg.openai),m('Upload',cfg.googleConnected)].join('  ·  ');
+  if(!$('#s-qlim').value) $('#s-qlim').value=cfg.quotaLimit; refreshQuota();
   const sv=(id,ok)=>$(id).textContent=ok?'(saved ✓)':'';
   sv('#s-yt',cfg.youtube); sv('#s-an',cfg.claudeMode==='api');
   $('#s-claude').innerHTML=cfg.claudeMode==='api'?'Claude: using your Anthropic API key.':cfg.claudeMode==='cli'?'Claude: using your Claude login through the <code>claude</code> CLI (no API key needed). If you see “not logged in”, open a terminal, run <code>claude</code> and type <code>/login</code> once.':'Claude: not available — install Claude Code or add an API key.'; sv('#s-oa',cfg.openai); sv('#s-gc',cfg.googleClient);
@@ -248,7 +263,7 @@ async function loadCfg(){
 }
 $('#s-save').onclick=async()=>{
   await api('/api/settings',{YOUTUBE_API_KEY:$('#s-ytkey').value,ANTHROPIC_API_KEY:$('#s-ankey').value,OPENAI_API_KEY:$('#s-oakey').value,
-    GOOGLE_CLIENT_ID:$('#s-gcid').value,GOOGLE_CLIENT_SECRET:$('#s-gcsec').value});
+    GOOGLE_CLIENT_ID:$('#s-gcid').value,GOOGLE_CLIENT_SECRET:$('#s-gcsec').value,YT_QUOTA_LIMIT:$('#s-qlim').value});
   ['#s-ytkey','#s-ankey','#s-oakey','#s-gcid','#s-gcsec'].forEach(i=>$(i).value='');
   $('#s-msg').textContent='Saved'; setTimeout(()=>$('#s-msg').textContent='',2000); loadCfg();
 };

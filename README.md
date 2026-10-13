@@ -113,6 +113,7 @@ GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 CHANNEL=@yourchannel      # only seeds your FIRST channel on first run; manage channels in the app afterwards
 NICHE=                    # same: seeds the first channel's niche keywords
+# YT_QUOTA_LIMIT=10000      # daily YouTube quota shown in the top bar (change only if Google raised it)
 # CLAUDE_CLI_MODEL=sonnet
 # OPENAI_IMAGE_MODEL=gpt-image-1
 ```
@@ -160,6 +161,8 @@ Removing a channel in Settings only removes it from the list. Its folder under `
 
 ## 5. Costs and limits at a glance
 
+**Quota meter:** the top bar shows your remaining YouTube quota for the day (`9,900 / 10,000 left`, a bar, and the time until it resets). YouTube has no API for "quota left", so the app **counts units locally** from Google's published costs: search 100, upload 1,600, thumbnail 50, everything else 1. Cached results cost nothing, and if Google ever replies "quota exceeded" the meter jumps to empty. It resets at midnight Pacific time. Because the quota belongs to your Google Cloud project's API key, the meter is shared by all channels. It only counts calls made by this app, so if the same key is used elsewhere the real number may be lower. If Google raised your daily limit, set it in **Settings → Daily YouTube quota limit**. The count is stored in `data/quota.json`.
+
 | Action | YouTube quota | Other cost |
 |---|---|---|
 | Channel analysis | ~5 units | none |
@@ -191,7 +194,7 @@ python edit.py render   <video_folder>                       add user_assets ove
 | Page doesn't load / `Address already in use` | Another program uses port 8791. Close it, or start with `set PORT=8800 && python server.py` (publishing's sign-in then needs a matching redirect, so keep 8791 if you can). |
 | "Claude CLI isn't logged in" | Open a terminal, run `claude`, type `/login`. Or add an Anthropic API key. |
 | "Add your YOUTUBE_API_KEY" | Save the key in Settings, then retry. |
-| `quotaExceeded` | You used the daily 10,000 units. It resets at midnight Pacific time. |
+| `quotaExceeded` | You used the daily quota (see the meter in the top bar). It resets at midnight Pacific time; cached results still work meanwhile. |
 | `redirect_uri_mismatch` | The OAuth client must be of type **Desktop app**, and the app must run on port 8791. |
 | `access_denied` on connect | Add your Google account under **Test users** on the consent screen. |
 | Upload is private | Expected for unverified projects; change visibility in YouTube Studio. |
