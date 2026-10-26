@@ -1,0 +1,22 @@
+# pylint settings for TubePilot (run: python -m pylint $(git ls-files '*.py'))
+[MAIN]
+py-version = 3.9
+
+[FORMAT]
+# The code base uses long, data-heavy lines (prompts, JSON payloads); 100 would force noisy wrapping.
+max-line-length = 160
+# ...except lines that start with a string literal: those are LLM prompts, kept readable as single lines.
+ignore-long-lines = ^\s*(f?"|f?')
+# server.py is deliberately a single dependency-free file.
+max-module-lines = 2000
+
+[BASIC]
+# Tiny helpers are self-explanatory; functions of 8+ lines need a docstring.
+docstring-min-length = 8
+no-docstring-rgx = ^(_|do_)
+
+[DESIGN]
+# Defaults (15 / 12 / 50) are tuned for library code; these suit request handlers and data crunching.
+max-locals = 20
+max-branches = 15
+max-statements = 60

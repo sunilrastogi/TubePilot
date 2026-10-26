@@ -15,7 +15,13 @@ full-frame at 5:25 for 20s; LEN optional: images default to 3s, videos play to t
 Overlay times refer to the CUT video (rough_cut.mp4), not the raw one.
 Main-video audio keeps playing under overlays.
 """
-import json, mimetypes, os, re, secrets, shutil, subprocess, sys, urllib.request
+import json
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).parent
@@ -43,15 +49,25 @@ def die(msg):
 
 
 def env_key():
+    """The OpenAI key from .env (needed for Whisper transcription)."""
     for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
         if line.startswith("OPENAI_API_KEY="):
             return line.split("=", 1)[1].strip().strip('"')
-    die("OPENAI_API_KEY missing from .env")
+    return sys.exit("error: OPENAI_API_KEY missing from .env")
+
+
+def ffmpeg_install_hint():
+    """How to install ffmpeg on this operating system."""
+    if sys.platform == "win32":
+        return "winget install Gyan.FFmpeg  (then reopen the terminal)"
+    if sys.platform == "darwin":
+        return "brew install ffmpeg  (install Homebrew first from https://brew.sh)"
+    return "sudo apt install ffmpeg  (or your distribution's package manager)"
 
 
 def need_ffmpeg():
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
-        die("ffmpeg not found. Run: winget install Gyan.FFmpeg  (then restart the terminal)")
+        die(f"ffmpeg and ffprobe not found on PATH. Run: {ffmpeg_install_hint()}")
 
 
 def folder(name):
@@ -62,14 +78,14 @@ def folder(name):
 
 
 def raw_video(d):
-    vids = [f for f in (d / "raw_video").iterdir() if f.suffix.lower() in VIDEO_EXT]
+    vids = [f for f in (d / "raw_video").iterdir() if f.suffix.lower() in VIDEO_EXT and not f.name.startswith(".")]  # skip macOS ._ files
     if len(vids) != 1:
         die(f"expected exactly one video in {d / 'raw_video'}, found {len(vids)}")
     return vids[0]
 
 
 def run(cmd):
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     if r.returncode:
         die(f"{cmd[0]} failed:\n{r.stderr[-1500:]}")
     return r.stdout
@@ -85,6 +101,7 @@ def fmt(t):
 
 # ---------- Whisper ----------
 def whisper(audio, key):
+    """Transcribe an audio file with OpenAI Whisper; returns the verbose JSON with word timestamps."""
     b = secrets.token_hex(8)
     fields = [("model", "whisper-1"), ("response_format", "verbose_json"), ("timestamp_granularities[]", "word")]
     body = b"".join(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields)
@@ -97,6 +114,7 @@ def whisper(audio, key):
 
 
 def cmd_analyze(name):
+    """Extract the audio, transcribe it, write transcript.txt/json and propose cuts for long pauses."""
     need_ffmpeg()
     d, key = folder(name), env_key()
     video, out = raw_video(d), d / "claude_assets"
@@ -151,6 +169,7 @@ def write_cut_plan(out, cuts, total):
 
 
 def cmd_add_cut(name, start, end, reason):
+    """Add a manual cut (repetition, fumble) to cuts.json and refresh the cut plan."""
     out = folder(name) / "claude_assets"
     f = out / "cuts.json"
     cuts = json.loads(f.read_text(encoding="utf-8"))
@@ -165,6 +184,7 @@ def cmd_add_cut(name, start, end, reason):
 
 # ---------- apply cuts ----------
 def keep_segments(cuts, total):
+    """The (start, end) pieces of the video that remain once the approved cuts are removed."""
     segs, pos = [], 0.0
     for c in sorted((c for c in cuts if c.get("approved")), key=lambda c: c["start"]):
         if c["start"] > pos:
@@ -176,6 +196,7 @@ def keep_segments(cuts, total):
 
 
 def cmd_cut(name):
+    """Apply the approved cuts with ffmpeg and write claude_assets/rough_cut.mp4."""
     need_ffmpeg()
     d = folder(name)
     video, out = raw_video(d), d / "claude_assets"
@@ -201,6 +222,7 @@ OVERLAY_RE = re.compile(r"^overlay_(\d+)_(\d+)(?:_(\d+))?$", re.I)
 
 
 def find_overlays(d):
+    """Overlay files in user_assets (named overlay_MM_SS[_LEN]) as (file, start seconds, length seconds)."""
     res = []
     for f in sorted((d / "user_assets").iterdir()):
         m = OVERLAY_RE.match(f.stem)
@@ -212,6 +234,7 @@ def find_overlays(d):
 
 
 def cmd_render(name):
+    """Composite the user_assets overlays onto the rough cut and write final_edit/final.mp4."""
     need_ffmpeg()
     d = folder(name)
     base = d / "claude_assets" / "rough_cut.mp4"
@@ -221,7 +244,8 @@ def cmd_render(name):
     dest = d / "final_edit" / "final.mp4"
     if not ovs:
         shutil.copy(base, dest)
-        return print(f"no overlays found; copied rough cut to {dest}")
+        print(f"no overlays found; copied rough cut to {dest}")
+        return
     w, h = map(int, run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
                          "-of", "csv=s=x:p=0", str(base)]).strip().split("x"))
     cmd, filt, last = ["ffmpeg", "-y", "-i", str(base)], [], "[0:v]"
@@ -242,14 +266,20 @@ def cmd_render(name):
     print(f"wrote {dest}")
 
 
-if __name__ == "__main__":
-    a = sys.argv[1:]
-    if "--channel" in a:
-        i = a.index("--channel")
-        EDITS = channel_edits(a[i + 1] if i + 1 < len(a) else None)
-        del a[i:i + 2]
+def main():
+    """Command-line entry point (usage is in the module docstring)."""
+    global EDITS  # pylint: disable=global-statement  # --channel switches the edits root for the folder() helper
+    args = sys.argv[1:]
+    if "--channel" in args:
+        i = args.index("--channel")
+        EDITS = channel_edits(args[i + 1] if i + 1 < len(args) else None)
+        del args[i:i + 2]
     try:
-        {"analyze": lambda: cmd_analyze(a[1]), "cut": lambda: cmd_cut(a[1]), "render": lambda: cmd_render(a[1]),
-         "add-cut": lambda: cmd_add_cut(*a[1:5])}[a[0]]()
+        {"analyze": lambda: cmd_analyze(args[1]), "cut": lambda: cmd_cut(args[1]), "render": lambda: cmd_render(args[1]),
+         "add-cut": lambda: cmd_add_cut(*args[1:5])}[args[0]]()
     except (IndexError, KeyError):
         print(__doc__)
+
+
+if __name__ == "__main__":
+    main()

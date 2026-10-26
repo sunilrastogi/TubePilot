@@ -5,13 +5,43 @@
 Run:  python server.py   ->  http://127.0.0.1:8791
 Keys live in .env (YOUTUBE_API_KEY, ANTHROPIC_API_KEY, CHANNEL).
 """
-import base64, http.client, io, json, mimetypes, os, re, secrets, threading, time, hashlib, statistics
-import shutil, subprocess, sys, tempfile
-import urllib.request, urllib.parse, urllib.error
+import base64
+import hashlib
+import http.client
+import io
+import json
+import mimetypes
+import os
+import re
+import secrets
+import shutil
+import statistics
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+try:  # python.org builds on macOS ship without root certificates; certifi provides them
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+except ImportError:
+    pass
+try:  # Pillow is optional: without it generated thumbnails are used as they come
+    from PIL import Image, ImageEnhance, ImageFilter
+except ImportError:
+    Image = ImageEnhance = ImageFilter = None
+try:  # bundled ffmpeg (pip package imageio-ffmpeg) used when ffmpeg isn't on PATH
+    import imageio_ffmpeg
+except ImportError:
+    imageio_ffmpeg = None
 
 ROOT = Path(__file__).parent
 ENV_PATH = ROOT / ".env"
@@ -128,7 +158,7 @@ def migrate_legacy():
         if old.exists() and not new.exists():
             shutil.move(str(old), str(new))
     for c in chans:
-        ensure_channel(c["id"], sample=(c["id"] == chans[0]["id"]))
+        ensure_channel(c["id"], sample=c["id"] == chans[0]["id"])
     return chans
 
 
@@ -137,6 +167,7 @@ def channels_info():
 
 
 def upsert_channel(b):
+    """Create a channel, or update the one with b['id']; its folders are created on first use."""
     name, handle, niche = (b.get("name") or "").strip(), (b.get("handle") or "").strip(), (b.get("niche") or "").strip()
     if not name:
         raise ApiError("Give the channel a name.")
@@ -235,6 +266,8 @@ def quota_info():
 
 # ---------- http helpers ----------
 class ApiError(Exception):
+    """An error that should reach the user as a clean message with an HTTP status."""
+
     def __init__(self, msg, status=400):
         super().__init__(msg)
         self.status = status
@@ -252,14 +285,15 @@ def http_json(url, data=None, headers=None, timeout=90):
         try:
             msg = json.loads(body).get("error", {})
             msg = msg.get("message", body) if isinstance(msg, dict) else str(msg)
-        except Exception:
+        except (ValueError, AttributeError):
             msg = body[:300]
-        raise ApiError(f"{e.code}: {msg}", 502)
+        raise ApiError(f"{e.code}: {msg}", 502) from e
     except urllib.error.URLError as e:
-        raise ApiError(f"Network error: {e.reason}", 502)
+        raise ApiError(f"Network error: {e.reason}", 502) from e
 
 
 def yt_get(endpoint, **params):
+    """GET a YouTube Data API v3 endpoint with a 1-hour disk cache; uncached calls are counted against the daily quota."""
     key = load_env().get("YOUTUBE_API_KEY")
     if not key:
         raise ApiError("Add your YOUTUBE_API_KEY in Settings first.", 400)
@@ -290,6 +324,7 @@ def parse_dt(s):
 
 
 def fetch_videos(ids):
+    """Details for video ids (stats, tags, duration, plus derived views/day and engagement), 50 per request."""
     out = []
     for i in range(0, len(ids), 50):
         data = yt_get("videos", part="snippet,statistics,contentDetails", id=",".join(ids[i:i + 50]))
@@ -321,11 +356,76 @@ def keywords(videos, n=15, weight="views"):
             score[t] += wt
         for a, b in zip(w, w[1:]):
             score[f"{a} {b}"] += wt * 1.5
-    return [{"term": t, "score": round(s)} for t, s in score.most_common(n)]
+    ranked = sorted(score.items(), key=lambda item: (-item[1], item[0]))  # ties alphabetical, so the order is stable between runs
+    return [{"term": t, "score": round(s)} for t, s in ranked[:n]]
 
 
 # ---------- 1. channel analysis ----------
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+LENGTH_BUCKETS = ["Shorts (<=60s)", "<5 min", "5-10 min", "10-20 min", "20+ min"]
+
+
+def _length_bucket(v):
+    if v["short"]:
+        return LENGTH_BUCKETS[0]
+    minutes = v["duration"] / 60
+    for label, limit in zip(LENGTH_BUCKETS[1:], (5, 10, 20)):
+        if minutes < limit:
+            return label
+    return LENGTH_BUCKETS[4]
+
+
+def _group_stats(vids, keyfn):
+    """Median views and average engagement for videos grouped by keyfn (weekday, length bucket ...)."""
+    groups = {}
+    for v in vids:
+        groups.setdefault(keyfn(v), []).append(v)
+    return [{"label": k, "count": len(x), "medianViews": round(statistics.median(y["views"] for y in x)),
+             "avgEngagement": round(statistics.mean(y["engagement"] for y in x), 2)} for k, x in groups.items()]
+
+
+def _uploads_per_month(vids):
+    dates = sorted(parse_dt(v["published"]) for v in vids)
+    gaps = [(b - a).days for a, b in zip(dates, dates[1:])]
+    return round(30 / statistics.mean(gaps), 1) if gaps and statistics.mean(gaps) > 0 else None
+
+
+def _recent_video_ids(uploads_playlist, count):
+    ids, token = [], None
+    while len(ids) < count:
+        page = yt_get("playlistItems", part="contentDetails", playlistId=uploads_playlist, maxResults=50, pageToken=token)
+        ids += [i["contentDetails"]["videoId"] for i in page.get("items", [])]
+        token = page.get("nextPageToken")
+        if not token:
+            break
+    return ids[:count]
+
+
+def _channel_insights(vids, by_day, by_len, per_month):
+    """Plain-language takeaways from the grouped statistics."""
+    insights = []
+    if by_len:
+        best = max(by_len, key=lambda r: r["medianViews"])
+        insights.append(f"Best-performing format: {best['label']} (median {best['medianViews']:,} views over {best['count']} videos).")
+    if len(by_day) > 1:
+        best_day = max((r for r in by_day if r["count"] >= 2), key=lambda r: r["medianViews"], default=None)
+        if best_day:
+            insights.append(f"{best_day['label']} uploads get the highest median views ({best_day['medianViews']:,}).")
+    overperformers = [v for v in vids if v["vsMedian"] >= 2]
+    if overperformers:
+        insights.append(f"{len(overperformers)} videos did 2x+ your median; study their titles/hooks (see Outliers).")
+    if per_month:
+        insights.append(f"You upload about {per_month} videos/month based on your last {len(vids)}.")
+    recent, older = vids[:10], vids[10:20]
+    if len(older) >= 5:
+        r, o = statistics.median(v["viewsPerDay"] for v in recent), statistics.median(v["viewsPerDay"] for v in older)
+        if o:
+            insights.append(f"Recent 10 videos' median views/day is {'up' if r >= o else 'down'} {abs(r / o - 1) * 100:.0f}% vs the 10 before.")
+    return insights
+
+
 def channel_analysis(handle, count=50):
+    """Stats and performance analysis for a channel's latest `count` videos."""
     handle = (handle or active_channel().get("handle", "")).strip()
     if not handle:
         raise ApiError("Enter your channel handle (e.g. @mychannel) or channel ID.")
@@ -338,72 +438,26 @@ def channel_analysis(handle, count=50):
     if not ch.get("items"):
         raise ApiError(f"Channel '{handle}' not found.", 404)
     c = ch["items"][0]
-    uploads = c["contentDetails"]["relatedPlaylists"]["uploads"]
-    ids, token = [], None
-    while len(ids) < count:
-        pl = yt_get("playlistItems", part="contentDetails", playlistId=uploads, maxResults=50, pageToken=token)
-        ids += [i["contentDetails"]["videoId"] for i in pl.get("items", [])]
-        token = pl.get("nextPageToken")
-        if not token:
-            break
-    vids = fetch_videos(ids[:count])
+    vids = fetch_videos(_recent_video_ids(c["contentDetails"]["relatedPlaylists"]["uploads"], count))
     vids.sort(key=lambda v: v["published"], reverse=True)
     st = c["statistics"]
-    subs = int(st.get("subscriberCount", 0))
     longs = [v for v in vids if not v["short"]] or vids
     med = statistics.median(v["views"] for v in vids) if vids else 0
-
-    # upload cadence
-    dates = sorted(parse_dt(v["published"]) for v in vids)
-    gaps = [(b - a).days for a, b in zip(dates, dates[1:])]
-    per_month = round(30 / statistics.mean(gaps), 1) if gaps and statistics.mean(gaps) > 0 else None
-
-    # what works: weekday + duration buckets
-    def bucket(v):
-        m = v["duration"] / 60
-        return "Shorts (<=60s)" if v["short"] else "<5 min" if m < 5 else "5-10 min" if m < 10 else "10-20 min" if m < 20 else "20+ min"
-    def group(keyfn):
-        g = {}
-        for v in vids:
-            g.setdefault(keyfn(v), []).append(v)
-        return [{"label": k, "count": len(x), "medianViews": round(statistics.median(y["views"] for y in x)),
-                 "avgEngagement": round(statistics.mean(y["engagement"] for y in x), 2)} for k, x in g.items()]
-    weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    by_day = sorted(group(lambda v: weekdays[parse_dt(v["published"]).weekday()]), key=lambda r: weekdays.index(r["label"]))
-    by_len = sorted(group(bucket), key=lambda r: ["Shorts (<=60s)", "<5 min", "5-10 min", "10-20 min", "20+ min"].index(r["label"]))
-
+    per_month = _uploads_per_month(vids)
+    by_day = sorted(_group_stats(vids, lambda v: WEEKDAYS[parse_dt(v["published"]).weekday()]), key=lambda r: WEEKDAYS.index(r["label"]))
+    by_len = sorted(_group_stats(vids, _length_bucket), key=lambda r: LENGTH_BUCKETS.index(r["label"]))
     for v in vids:
         v["vsMedian"] = round(v["views"] / med, 2) if med else 0
-
     top = sorted(vids, key=lambda v: v["views"], reverse=True)
-    insights = []
-    if by_len:
-        best = max(by_len, key=lambda r: r["medianViews"])
-        insights.append(f"Best-performing format: {best['label']} (median {best['medianViews']:,} views over {best['count']} videos).")
-    if len(by_day) > 1:
-        bd = max((r for r in by_day if r["count"] >= 2), key=lambda r: r["medianViews"], default=None)
-        if bd:
-            insights.append(f"{bd['label']} uploads get the highest median views ({bd['medianViews']:,}).")
-    overperf = [v for v in vids if v["vsMedian"] >= 2]
-    if overperf:
-        insights.append(f"{len(overperf)} videos did 2x+ your median; study their titles/hooks (see Outliers).")
-    if per_month:
-        insights.append(f"You upload about {per_month} videos/month based on your last {len(vids)}.")
-    recent, older = vids[:10], vids[10:20]
-    if len(older) >= 5:
-        r, o = statistics.median(v["viewsPerDay"] for v in recent), statistics.median(v["viewsPerDay"] for v in older)
-        if o:
-            insights.append(f"Recent 10 videos' median views/day is {'up' if r >= o else 'down'} {abs(r / o - 1) * 100:.0f}% vs the 10 before.")
-
     return {
         "channel": {"id": c["id"], "title": c["snippet"]["title"], "thumb": c["snippet"]["thumbnails"]["default"]["url"],
-                    "subs": subs, "views": int(st.get("viewCount", 0)), "videos": int(st.get("videoCount", 0)),
+                    "subs": int(st.get("subscriberCount", 0)), "views": int(st.get("viewCount", 0)), "videos": int(st.get("videoCount", 0)),
                     "hiddenSubs": st.get("hiddenSubscriberCount", False)},
         "summary": {"analyzed": len(vids), "medianViews": round(med), "avgEngagement": round(statistics.mean(v["engagement"] for v in vids), 2) if vids else 0,
                     "medianViewsPerDay": round(statistics.median(v["viewsPerDay"] for v in vids), 1) if vids else 0,
                     "avgDurationMin": round(statistics.mean(v["duration"] for v in longs) / 60, 1) if longs else 0,
                     "uploadsPerMonth": per_month},
-        "insights": insights, "byWeekday": by_day, "byLength": by_len,
+        "insights": _channel_insights(vids, by_day, by_len, per_month), "byWeekday": by_day, "byLength": by_len,
         "top": top[:5], "bottom": top[-5:][::-1], "outliers": [v for v in top if v["vsMedian"] >= 2][:8],
         "keywords": keywords(top[:25]), "videos": vids,
     }
@@ -411,6 +465,7 @@ def channel_analysis(handle, count=50):
 
 # ---------- 2. trends ----------
 def trends(q, days=7, region="US", max_results=30, order="viewCount"):
+    """Videos for niche keywords from the last `days`, ranked by views/day, with rising title terms and small channels beating their size."""
     if not q.strip():
         raise ApiError("Enter niche keywords, e.g. 'home espresso, coffee gear'.")
     after = (datetime.now(timezone.utc) - timedelta(days=int(days))).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -420,16 +475,7 @@ def trends(q, days=7, region="US", max_results=30, order="viewCount"):
                    regionCode=region or None, maxResults=min(int(max_results), 50))
         ids += [i["id"]["videoId"] for i in s.get("items", [])]
     ids = list(dict.fromkeys(ids))
-    vids = fetch_videos(ids)
-    chans = {}
-    cids = list({v["channelId"] for v in vids})
-    for i in range(0, len(cids), 50):
-        for c in yt_get("channels", part="statistics", id=",".join(cids[i:i + 50])).get("items", []):
-            chans[c["id"]] = int(c["statistics"].get("subscriberCount", 0))
-    for v in vids:
-        subs = chans.get(v["channelId"], 0)
-        v["subs"] = subs
-        v["outlier"] = round(v["views"] / subs, 2) if subs else None  # views relative to audience size
+    vids = attach_subs(fetch_videos(ids))  # adds subs + outlier (views relative to audience size)
     vids.sort(key=lambda v: v["viewsPerDay"], reverse=True)
     small_winners = [v for v in vids if v["outlier"] and v["outlier"] >= 1 and v["subs"] < 100000][:8]
     return {"query": q, "days": days, "videos": vids, "keywords": keywords(vids, 20), "smallChannelWinners": small_winners,
@@ -443,6 +489,7 @@ def ts(sec):
 
 
 def make_script(p):
+    """Quick script with timestamps for a topic (Claude), plus titles, thumbnail ideas, description and tags."""
     if not claude_mode():
         raise ApiError("Add an ANTHROPIC_API_KEY in Settings, or install Claude Code and log in.")
     topic = (p.get("topic") or "").strip()
@@ -474,7 +521,8 @@ Use 4-7 sections. Total words across hook+sections+outro should be about {words}
 
 def add_timestamps(s, wpm):
     """Timestamps come from word counts, so they match real pacing."""
-    def secs(t): return len(re.findall(r"\S+", t or "")) / wpm * 60
+    def secs(t):
+        return len(re.findall(r"\S+", t or "")) / wpm * 60
     blocks = [{"heading": "Hook", "narration": s.get("hook", ""), "visuals": ""}] + s.get("sections", []) + \
              [{"heading": "Outro", "narration": s.get("outro", ""), "visuals": ""}]
     t = 0.0
@@ -493,15 +541,13 @@ def add_timestamps(s, wpm):
 # ---------- AI helpers ----------
 def local_image_bytes(path, size=768):
     """Downscaled JPEG bytes of a local image (keeps prompts small); raw bytes if Pillow is missing."""
-    try:
-        from PIL import Image
-        im = Image.open(path).convert("RGB")
-        im.thumbnail((size, size))
-        buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=80)
-        return buf.getvalue()
-    except ImportError:
+    if Image is None:
         return Path(path).read_bytes()
+    im = Image.open(path).convert("RGB")
+    im.thumbnail((size, size))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=80)
+    return buf.getvalue()
 
 
 def claude_mode():
@@ -535,9 +581,9 @@ def claude_cli(system, content):
                "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config"]
         cmd += ["--tools", "Read", "--allowedTools", "Read", "--add-dir", str(tmp)] if has_images else ["--tools", ""]
         try:
-            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8", timeout=420, cwd=tmp)
-        except subprocess.TimeoutExpired:
-            raise ApiError("Claude took too long (over 7 minutes); try a shorter script.", 502)
+            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8", timeout=420, cwd=tmp, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise ApiError("Claude took too long (over 7 minutes); try a shorter script.", 502) from exc
         out = (r.stdout or "").strip()
         if "not logged in" in out.lower() or "/login" in out.lower():
             raise ApiError("Claude CLI isn't logged in. Open a terminal, run `claude`, type /login, then retry (or add an Anthropic API key in Settings).", 400)
@@ -549,6 +595,7 @@ def claude_cli(system, content):
 
 
 def claude(system, content, max_tokens=8000):
+    """Send a prompt to Claude: the Anthropic API when a key is saved, otherwise the logged-in `claude` CLI. Returns the reply text."""
     key = load_env().get("ANTHROPIC_API_KEY")
     if not key:
         if claude_mode() == "cli":
@@ -570,8 +617,8 @@ def claude_json(system, content, max_tokens=8000, images=()):
         m = re.search(r"\{.*\}", text, re.S)
         try:
             return json.loads(m.group(0))
-        except Exception:
-            raise ApiError("Model returned malformed JSON; try again.", 502)
+        except (ValueError, AttributeError) as exc:
+            raise ApiError("Model returned malformed JSON; try again.", 502) from exc
     if images and not isinstance(content, list):
         blocks = [{"type": "text", "text": content}]
         for label, vid in images:
@@ -592,6 +639,7 @@ def slim(v, tags=10):
 
 
 def attach_subs(vids):
+    """Add each video's channel subscriber count and the views-to-subscribers ratio ('outlier')."""
     cids = list({v["channelId"] for v in vids})
     subs = {}
     for i in range(0, len(cids), 50):
@@ -627,6 +675,7 @@ def profile(v):
 
 
 def similar_successful(v, n=8):
+    """Videos from other channels that are similar to `v`, ranked by views per day (the winners to compare against)."""
     words = [w for w in re.findall(r"[a-zA-Z0-9']+", v["title"].lower()) if w not in STOP and len(w) > 2][:5]
     q = " ".join(words) or v["title"]
     ids = []
@@ -640,6 +689,7 @@ def similar_successful(v, n=8):
 
 
 def video_detail(vid_input):
+    """Video-level analysis: compare a video with similar successful ones and ask Claude for improvements."""
     vid = extract_video_id(vid_input)
     found = fetch_videos([vid])
     if not found:
@@ -650,7 +700,7 @@ def video_detail(vid_input):
         raise ApiError("No comparable videos found for this title.", 404)
     mine, own_tags = profile(v), {t.lower() for t in v["tags"]}
     profs = [profile(s) for s in sims]
-    compare = [{"metric": k, "you": mine[k], "benchmark": round(statistics.median(p[k] for p in profs), 1)} for k in mine]
+    compare = [{"metric": k, "you": you, "benchmark": round(statistics.median(p[k] for p in profs), 1)} for k, you in mine.items()]
     freq = tag_freq(sims)
     missing_tags = [t for t, c in freq.most_common(40) if c >= 2 and t not in own_tags][:15] or \
                    [t for t, c in freq.most_common(10) if t not in own_tags]
@@ -670,7 +720,8 @@ def video_detail(vid_input):
               "\"thumbnail\": {\"diagnosis\": str comparing yours to the winners, \"ideas\": [{\"concept\": str, \"text_overlay\": str (<=4 words), "
               "\"image_prompt\": str (detailed prompt for an AI image generator, 16:9 composition, key subject centered)} x3]}}")
     try:
-        out["ai"] = claude_json(system, json.dumps(payload), 6000, images=[("YOURS", v["id"])] + [(f"top comparator '{s['title'][:60]}'", s["id"]) for s in sims[:4]])
+        out["ai"] = claude_json(system, json.dumps(payload), 6000,
+                                images=[("YOURS", v["id"])] + [(f"top comparator '{s['title'][:60]}'", s["id"]) for s in sims[:4]])
     except ApiError as e:
         out["aiError"] = str(e)
     return out
@@ -678,11 +729,13 @@ def video_detail(vid_input):
 
 # ---------- next-3 video ideas + full package ----------
 def next_videos(p):
+    """Three next-video ideas that combine the channel's own results with what is trending in its niche."""
     ch = channel_analysis(p.get("handle"), 50)
     default_q = ", ".join(k["term"] for k in ch["keywords"] if " " not in k["term"])[:80]
     q = ", ".join([t.strip() for t in (p.get("q") or active_channel().get("niche") or default_q).split(",") if t.strip()][:2])
     tr = trends(q, 14, p.get("region") or "US", 25)
-    own = lambda v: {"title": v["title"], "views": v["views"], "x_median": v["vsMedian"], "minutes": round(v["duration"] / 60, 1)}
+    def own(v):
+        return {"title": v["title"], "views": v["views"], "x_median": v["vsMedian"], "minutes": round(v["duration"] / 60, 1)}
     payload = {"channel": {"name": ch["channel"]["title"], "subs": ch["channel"]["subs"], "summary": ch["summary"], "insights": ch["insights"],
                            "best_formats_by_length": ch["byLength"], "top_videos": [own(v) for v in ch["top"]],
                            "weak_videos": [own(v) for v in ch["bottom"]], "title_keywords": ch["keywords"][:12],
@@ -702,6 +755,7 @@ def next_videos(p):
 
 
 def build_package(p):
+    """Full package for a chosen idea (script, titles, description, tags, keywords, thumbnail concepts), grounded in trending videos."""
     idea, inputs = p.get("idea") or {}, p.get("inputs") or {}
     if not idea.get("title"):
         raise ApiError("No idea selected.")
@@ -719,7 +773,8 @@ def build_package(p):
                "target": {"minutes": minutes, "spoken_words": int(minutes * wpm), "wpm": wpm},
                "creator_channel": mine, "trending_videos_on_this_topic": [{**slim(v, 15), "description_start": v["desc"][:250]} for v in top],
                "rising_terms": tr["keywords"][:20], "tags_used_by_multiple_top_videos": [{"tag": t, "count": c} for t, c in freq.most_common(25) if c >= 2]}
-    system = ("You are a YouTube scriptwriter and packaging strategist. Using the trending-video data and attached thumbnails, produce a complete video package. "
+    system = (
+        "You are a YouTube scriptwriter and packaging strategist. Using the trending-video data and attached thumbnails, produce a complete video package. "
               "Write spoken narration (short sentences, concrete examples, open loops, no stage directions in narration). Respect the creator's inputs. "
               "Prefer tags that real top videos use. Schema: {\"titles\": [str x5, <=65 chars, honest], \"hook\": str, "
               "\"sections\": [{\"heading\": str, \"narration\": str, \"visuals\": str}] (4-7), \"outro\": str, "
@@ -739,13 +794,11 @@ def build_package(p):
 # ---------- thumbnails (OpenAI) ----------
 def to_16x9_jpeg(raw):
     """gpt-image-1 only makes 3:2; fit the whole picture into a 1280x720 frame (blurred side fill) instead of cropping, so no text/face is cut off."""
-    try:
-        from PIL import Image, ImageFilter, ImageEnhance
-    except ImportError:
+    if Image is None:
         return raw
     im = Image.open(io.BytesIO(raw)).convert("RGB")
-    fg = im.resize((round(im.width * 720 / im.height), 720), Image.LANCZOS)
-    bg = im.resize((1280, round(im.height * 1280 / im.width)), Image.LANCZOS)
+    fg = im.resize((round(im.width * 720 / im.height), 720), Image.Resampling.LANCZOS)
+    bg = im.resize((1280, round(im.height * 1280 / im.width)), Image.Resampling.LANCZOS)
     top = (bg.height - 720) // 2
     bg = ImageEnhance.Brightness(bg.crop((0, top, 1280, top + 720)).filter(ImageFilter.GaussianBlur(28))).enhance(.7)
     bg.paste(fg, ((1280 - fg.width) // 2, 0))
@@ -756,7 +809,8 @@ def to_16x9_jpeg(raw):
 
 def art_direct(prompt, overlay, ctx):
     """Claude turns the rough idea + video context into one detailed, original brief for the image model."""
-    system = ("You are an elite YouTube thumbnail art director. Write ONE prompt for an AI image model (gpt-image-1) for a 16:9 thumbnail. Rules: a single clear focal "
+    system = (
+        "You are an elite YouTube thumbnail art director. Write ONE prompt for an AI image model (gpt-image-1) for a 16:9 thumbnail. Rules: a single clear focal "
               "subject; a curiosity gap or strong emotion; a fresh, specific visual metaphor tied to THIS video's promise (avoid stock clichés like generic money piles, arrows "
               "and fake dashboards); 2-3 dominant colours with strong contrast; shallow depth, dramatic lighting; key subject and text inside the centre band; "
               "the picture is shown in a 16:9 frame with blurred side bars, so keep the subject and text centred horizontally and leave a small breathing margin (about 5%) around every edge; "
@@ -767,6 +821,7 @@ def art_direct(prompt, overlay, ctx):
 
 
 def gen_thumbnail(b):
+    """Generate a thumbnail with OpenAI (after Claude writes an art-directed prompt, unless disabled) and save it for the active channel."""
     key = load_env().get("OPENAI_API_KEY")
     if not key:
         raise ApiError("Add your OPENAI_API_KEY in Settings to generate thumbnails.")
@@ -781,7 +836,8 @@ def gen_thumbnail(b):
             used = prompt  # fall back to the raw concept if Claude is unavailable
     if overlay and overlay.lower() not in used.lower():
         used += f' Include this exact text in huge bold lettering: "{overlay}".'
-    full = ("YouTube thumbnail, 16:9 landscape, cinematic, high contrast, vivid colours, uncluttered, key subject and all text centred with a small margin from every edge, "
+    full = (
+        "YouTube thumbnail, 16:9 landscape, cinematic, high contrast, vivid colours, uncluttered, key subject and all text centred with a small margin from every edge, "
             f"no watermarks, no logos. {used}")
     quality = b.get("quality") if b.get("quality") in ("low", "medium", "high") else "high"
     r = http_json("https://api.openai.com/v1/images/generations",
@@ -840,6 +896,7 @@ def oauth_url(redirect):
 
 
 def oauth_callback(code, state, redirect):
+    """Finish Google sign-in: exchange the code for tokens and store them for the channel that started the sign-in."""
     if not state or state != OAUTH_STATE["v"]:
         raise ApiError("OAuth state mismatch; start the connection again.")
     OAUTH_STATE["v"], CTX.ch = None, OAUTH_STATE["ch"]  # tokens are saved for the channel that started the sign-in
@@ -853,6 +910,7 @@ def oauth_callback(code, state, redirect):
 
 
 def google_token():
+    """A valid Google access token for the active channel, refreshed when it has expired."""
     if not TOKENS.exists():
         raise ApiError("Connect your Google account in the Publish tab first.")
     t = json.loads(TOKENS.read_text())
@@ -896,13 +954,14 @@ def start_job(label, fn):
             job.update(state="done", progress=100)
         except ApiError as e:
             job.update(state="error", error=str(e))
-        except Exception as e:  # noqa
+        except Exception as e:  # pylint: disable=broad-exception-caught  # a background job must report, not die
             job.update(state="error", error=f"{type(e).__name__}: {e}")
     threading.Thread(target=run, daemon=True).start()
     return {"job": jid}
 
 
 def edit_dir(name, create=False):
+    """Resolve (and optionally create) a video's edit folder, making sure its standard sub-folders exist."""
     name = re.sub(r"[^\w\- ]", "", name or "").strip()[:60]
     if not name:
         raise ApiError("Give the edit folder a name.")
@@ -922,7 +981,8 @@ def edit_dir(name, create=False):
 def files_in(p, exts=None):
     if p.is_file():
         return [p.name]
-    return sorted(f.name for f in p.iterdir() if f.is_file() and (exts is None or f.suffix.lower() in exts)) if p.is_dir() else []
+    return sorted(f.name for f in p.iterdir()  # hidden files (.DS_Store, ._clip.mp4 from macOS) are not content
+                  if f.is_file() and not f.name.startswith(".") and (exts is None or f.suffix.lower() in exts)) if p.is_dir() else []
 
 
 def meta_file(d):
@@ -939,6 +999,7 @@ def write_metadata(d, m):
 
 
 def read_metadata(d):
+    """Parse metadata.txt (TITLE / DESCRIPTION / TAGS / KEYWORDS / CHAPTERS) from an edit folder."""
     f = meta_file(d)
     out, cur = {"title": "", "description": "", "tags": [], "keywords": [], "chapters": ""}, None
     if not f.exists():
@@ -967,6 +1028,7 @@ def edit_detail(name):
 
 
 def list_edits():
+    """Workspace overview: every edit folder with its status, plus the style.md and master-assets status."""
     edits = []
     for d in sorted(EDITS.iterdir()):
         if d.is_dir():
@@ -1024,9 +1086,11 @@ def esc_cell(s):
 
 
 def index_master_assets(job):
+    """Describe new master assets with Claude and add them to master_assets.md, leaving existing rows untouched."""
     md = MASTER / "master_assets.md"
     rows = md_index_rows(md)
-    allf = sorted(f for f in MASTER.rglob("*") if f.is_file() and f.suffix.lower() != ".md")
+    allf = sorted(f for f in MASTER.rglob("*")
+                  if f.is_file() and f.suffix.lower() != ".md" and not any(part.startswith(".") for part in f.relative_to(MASTER).parts))
     rel = {f.relative_to(MASTER).as_posix(): f for f in allf}
     new = [r for r in rel if r not in rows]
     imgs = [r for r in new if rel[r].suffix.lower() in IMG_EXT][:30]
@@ -1047,7 +1111,8 @@ def index_master_assets(job):
             x = got.get(r, {})
             rows[r] = f"| `{r}` | {esc_cell(x.get('description'))} | {esc_cell(x.get('best_for'))} | {esc_cell(x.get('notes'))} |"
     kept = sorted(r for r in rows if r in rel)
-    md.write_text("# Master assets\n\nReusable pictures and assets for any video. Hand-edit any row; existing rows are never overwritten when new files are indexed.\n"
+    md.write_text(
+        "# Master assets\n\nReusable pictures and assets for any video. Hand-edit any row; existing rows are never overwritten when new files are indexed.\n"
                   "Drop new files in this folder and click **Index new assets**.\n\n| File | Description | Best for | Notes |\n|---|---|---|---|\n" +
                   "\n".join(rows[r] for r in kept) + "\n", encoding="utf-8")
     return {"indexed": len(imgs), "total": len(kept), "remaining": len([r for r in new if rel[r].suffix.lower() in IMG_EXT]) - len(imgs)}
@@ -1055,21 +1120,18 @@ def index_master_assets(job):
 
 # ---- style.md from style_reference videos ----
 def run_quiet(cmd, timeout=600):
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
 
 
 def find_ffmpeg():
     """System ffmpeg if present, else the binary bundled with the imageio-ffmpeg pip package."""
     if shutil.which("ffmpeg"):
         return shutil.which("ffmpeg")
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except ImportError:
-        return None
+    return imageio_ffmpeg.get_ffmpeg_exe() if imageio_ffmpeg else None
 
 
 def video_frames(video, out, n=10):
+    """Sample frames from a video (denser around the opening) and count scene cuts, using ffmpeg."""
     ff = find_ffmpeg()
     if not ff:
         raise ApiError("ffmpeg isn't available. Run: python -m pip install imageio-ffmpeg  (then restart the app).")
@@ -1085,17 +1147,20 @@ def video_frames(video, out, n=10):
         if f.exists():
             frames.append((f, t))
     scan = min(dur, 300)  # scene-cut count over the first 5 minutes
-    cuts = len(re.findall(r"pts_time:", run_quiet([ff, "-t", str(scan), "-i", str(video), "-vf", "select='gt(scene,0.3)',showinfo", "-an", "-f", "null", "-"]).stderr))
-    return frames, dur, {"duration_sec": round(dur), "cuts_in_first_%ds" % scan: cuts, "avg_shot_length_sec": round(scan / (cuts + 1), 1)}
+    scene_log = run_quiet([ff, "-t", str(scan), "-i", str(video), "-vf", "select='gt(scene,0.3)',showinfo", "-an", "-f", "null", "-"]).stderr
+    cuts = len(re.findall(r"pts_time:", scene_log))
+    return frames, dur, {"duration_sec": round(dur), f"cuts_in_first_{int(scan)}s": cuts, "avg_shot_length_sec": round(scan / (cuts + 1), 1)}
 
 
 def build_style(job):
+    """Analyse the reference videos and merge the findings into style.md, keeping the manual-notes section."""
     vids = [f for f in sorted(STYLE_DIR.iterdir()) if f.is_file() and f.suffix.lower() in VIDEO_EXT]
     if not vids:
         raise ApiError("Put reference videos in data/style_reference first.")
     cache_f = STYLE_DIR / ".style_cache.json"
     cache = json.loads(cache_f.read_text(encoding="utf-8")) if cache_f.exists() else {}
-    system = ("You are a video editor analysing a reference video from still frames (evenly spaced) plus cut statistics. You cannot hear audio, so do not claim anything about "
+    system = (
+        "You are a video editor analysing a reference video from still frames (evenly spaced) plus cut statistics. You cannot hear audio, so do not claim anything about "
               "music or voice. Describe only what the frames and stats support. Schema: {\"pacing\": str, \"shot_types_and_framing\": str, \"on_screen_text_and_captions\": str, "
               "\"color_and_grade\": str, \"graphics_and_overlays\": str, \"b_roll_usage\": str, \"opening_structure\": str, \"signature_moves\": [str], \"uncertain\": str}")
     notes = {}
@@ -1105,7 +1170,7 @@ def build_style(job):
         if key not in cache:
             tmp = Path(tempfile.mkdtemp(prefix="style_", dir=CACHE_DIR))
             try:
-                frames, dur, stats = video_frames(v, tmp)
+                frames, _, stats = video_frames(v, tmp)
                 content = [{"type": "text", "text": f"Reference video: {v.name}\nStats: {json.dumps(stats)}\nFrames follow, with their timestamps."}]
                 for f, t in frames:
                     content += [{"type": "text", "text": f"Frame at {ts(t)}"}, {"type": "image", "path": str(f)}]
@@ -1117,8 +1182,10 @@ def build_style(job):
     job["msg"], job["progress"] = "Merging into style.md…", 90
     md = STYLE_DIR / "style.md"
     marker = "<!-- MANUAL NOTES BELOW: kept when style.md is regenerated -->"
-    manual = md.read_text(encoding="utf-8").split(marker, 1)[1] if md.exists() and marker in md.read_text(encoding="utf-8") else "\n\n(Add your own style rules here.)\n"
-    body = claude("You write a concise, actionable editing style guide in Markdown from per-video analyses. Find what the references share; call out differences separately. "
+    existing = md.read_text(encoding="utf-8") if md.exists() else ""
+    manual = existing.split(marker, 1)[1] if marker in existing else "\n\n(Add your own style rules here.)\n"
+    body = claude(
+        "You write a concise, actionable editing style guide in Markdown from per-video analyses. Find what the references share; call out differences separately. "
                   "Sections: Overview, Pacing & cuts (with numbers), Framing & shots, Text & captions, Color, Graphics & overlays, B-roll, Opening/hook structure, "
                   "Do / Don't checklist. Note clearly that audio/music was not analysed.", json.dumps(notes), 4000)
     md.write_text(f"# Editing style guide\n\n*Generated from: {', '.join(notes)}*\n\n{body.strip()}\n\n{marker}{manual}", encoding="utf-8")
@@ -1127,6 +1194,7 @@ def build_style(job):
 
 # ---- per-video edit plan ----
 def edit_plan(b):
+    """Write edit_plan.md for an edit folder from its script, the style guide, the asset index and the folder's files."""
     d = edit_dir(b.get("name"))
     e = edit_detail(d.name)
     script = (d / "script.md").read_text(encoding="utf-8") if (d / "script.md").exists() else ""
@@ -1137,7 +1205,8 @@ def edit_plan(b):
                "style_guide": style.read_text(encoding="utf-8")[:8000] if style.exists() else "(none yet)",
                "master_assets_md": assets.read_text(encoding="utf-8")[:12000] if assets.exists() else "(none yet)",
                "files": {"raw_video": e["raw"], "user_assets": e["user_assets"], "claude_assets": e["claude_assets"]}}
-    text = claude("You are a video editor's planner. Produce an edit plan in Markdown: (1) Overview; (2) a timeline table with columns Timestamp | Script beat | On screen | "
+    text = claude(
+        "You are a video editor's planner. Produce an edit plan in Markdown: (1) Overview; (2) a timeline table with columns Timestamp | Script beat | On screen | "
                   "Text/graphics | Notes (cuts, SFX, music cues); (3) 'Assets to use' listing exact file names; (4) 'Assets to generate' with a ready-to-use prompt each "
                   "(these go in claude_assets); (5) Style checklist drawn from the style guide. Use ONLY file names that appear in the provided lists or master_assets_md; "
                   "never invent files. Where nothing suitable exists, say so and add it to 'Assets to generate'.", json.dumps(payload), 6000)
@@ -1146,6 +1215,7 @@ def edit_plan(b):
 
 
 def clean_tags(tags):
+    """Make tags valid for YouTube: strip < >, cap each tag at 100 characters and the whole list at about 500."""
     out, total = [], 0
     for t in tags:
         t = re.sub(r"[<>]", "", t).strip()[:100]
@@ -1157,6 +1227,7 @@ def clean_tags(tags):
 
 
 def start_publish(p):
+    """Validate a publish request and start the upload in a background job; returns the job id."""
     if p.get("confirm") is not True:
         raise ApiError("Confirmation required.")
     d = edit_dir(p.get("edit"))
@@ -1190,66 +1261,86 @@ def start_publish(p):
     return {"job": job_id}
 
 
+def _start_resumable_upload(token, meta, size, ctype):
+    """Open YouTube's resumable-upload session and return its URL."""
+    init = urllib.request.Request(
+        "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        data=json.dumps(meta).encode(), method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=UTF-8",
+                 "X-Upload-Content-Length": str(size), "X-Upload-Content-Type": ctype})
+    try:
+        with urllib.request.urlopen(init, timeout=60) as r:
+            return r.headers["Location"]
+    except urllib.error.HTTPError as e:
+        raise ApiError(f"YouTube rejected the upload request: {e.read().decode()[:300]}") from e
+
+
+def _put_chunk(session, chunk, pos, size):
+    """PUT one chunk, retrying network errors and 5xx replies. Returns (status, Range header, body)."""
+    u = urllib.parse.urlparse(session)
+    for attempt in range(5):
+        try:
+            conn = http.client.HTTPSConnection(u.netloc, timeout=300)
+            conn.request("PUT", u.path + "?" + u.query, body=chunk, headers={
+                "Content-Length": str(len(chunk)), "Content-Range": f"bytes {pos}-{pos + len(chunk) - 1}/{size}"})
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+        except OSError:
+            time.sleep(2 ** attempt)
+            continue
+        if resp.status >= 500:
+            time.sleep(2 ** attempt)
+            continue
+        return resp.status, resp.getheader("Range"), body
+    raise ApiError("Upload failed after retries (network).")
+
+
+def _upload_chunks(job, path, session, size):
+    """Stream the file in CHUNK-sized pieces, updating job progress; returns YouTube's video resource."""
+    pos = 0
+    with open(path, "rb") as f:
+        while True:
+            f.seek(pos)
+            status, byte_range, body = _put_chunk(session, f.read(CHUNK), pos, size)
+            if status in (200, 201):
+                return json.loads(body)
+            if status != 308:
+                raise ApiError(f"Upload failed ({status}): {body[:300].decode('utf-8', 'replace')}")
+            pos = int(byte_range.split("-")[1]) + 1 if byte_range else 0
+            job["progress"] = round(min(pos, size) / size * 100, 1)
+
+
+def _set_thumbnail(job, token, video_id, thumb):
+    job["state"] = "thumbnail"
+    req = urllib.request.Request(f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={video_id}&uploadType=media",
+                                 data=thumb.read_bytes(), method="POST",
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": mimetypes.guess_type(thumb.name)[0] or "image/jpeg"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            resp.read()
+        quota_add("thumbnail", 50)
+    except urllib.error.HTTPError as e:
+        job["thumbnailError"] = e.read().decode()[:300]
+
+
 def run_upload(job, token, path, meta, thumb):
+    """Background thread: upload the video, then set its thumbnail. Progress and errors are reported through `job`."""
     try:
         size = path.stat().st_size
         if size == 0:
             raise ApiError("Video file is empty.")
-        ctype = mimetypes.guess_type(path.name)[0] or "video/*"
-        init = urllib.request.Request(
-            "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
-            data=json.dumps(meta).encode(), method="POST",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=UTF-8",
-                     "X-Upload-Content-Length": str(size), "X-Upload-Content-Type": ctype})
-        try:
-            with urllib.request.urlopen(init, timeout=60) as r:
-                loc = r.headers["Location"]
-        except urllib.error.HTTPError as e:
-            raise ApiError(f"YouTube rejected the upload request: {e.read().decode()[:300]}")
+        session = _start_resumable_upload(token, meta, size, mimetypes.guess_type(path.name)[0] or "video/*")
         quota_add("upload", 1600)
-        u, pos, job["state"], result = urllib.parse.urlparse(loc), 0, "uploading", None
-        with open(path, "rb") as f:
-            while result is None:
-                f.seek(pos)
-                chunk = f.read(CHUNK)
-                for attempt in range(5):
-                    try:
-                        conn = http.client.HTTPSConnection(u.netloc, timeout=300)
-                        conn.request("PUT", u.path + "?" + u.query, body=chunk, headers={
-                            "Content-Length": str(len(chunk)), "Content-Range": f"bytes {pos}-{pos + len(chunk) - 1}/{size}"})
-                        r = conn.getresponse(); body = r.read(); conn.close()
-                    except OSError:
-                        time.sleep(2 ** attempt)
-                        continue
-                    if r.status in (200, 201):
-                        result = json.loads(body)
-                    elif r.status == 308:
-                        rng = r.getheader("Range")
-                        pos = int(rng.split("-")[1]) + 1 if rng else 0
-                    elif r.status >= 500:
-                        time.sleep(2 ** attempt)
-                        continue
-                    else:
-                        raise ApiError(f"Upload failed ({r.status}): {body[:300].decode('utf-8', 'replace')}")
-                    break
-                else:
-                    raise ApiError("Upload failed after retries (network).")
-                job["progress"] = round(min(pos, size) / size * 100, 1)
+        job["state"] = "uploading"
+        result = _upload_chunks(job, path, session, size)
         job.update(videoId=result["id"], url=f"https://youtu.be/{result['id']}", studio=f"https://studio.youtube.com/video/{result['id']}/edit", progress=100)
         if thumb:
-            job["state"] = "thumbnail"
-            try:
-                req = urllib.request.Request(f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={result['id']}&uploadType=media",
-                                             data=thumb.read_bytes(), method="POST",
-                                             headers={"Authorization": f"Bearer {token}", "Content-Type": mimetypes.guess_type(thumb.name)[0] or "image/jpeg"})
-                urllib.request.urlopen(req, timeout=120).read()
-                quota_add("thumbnail", 50)
-            except urllib.error.HTTPError as e:
-                job["thumbnailError"] = e.read().decode()[:300]
+            _set_thumbnail(job, token, result["id"], thumb)
         job["state"] = "done"
     except ApiError as e:
         job.update(state="error", error=str(e))
-    except Exception as e:  # noqa
+    except Exception as e:  # pylint: disable=broad-exception-caught  # a background job must report, not die
         job.update(state="error", error=f"{type(e).__name__}: {e}")
 
 
@@ -1257,10 +1348,27 @@ def run_upload(job, token, path, meta, thumb):
 SETTINGS_KEYS = ("YOUTUBE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "YT_QUOTA_LIMIT")
 
 
+ASSET_EXT = {".png", ".ico", ".jpeg", ".jpg", ".svg"}
+
+
+def app_config():
+    """What the UI needs to know at start-up: which services are configured, the channel list, the quota limit."""
+    env = load_env()
+    channel = active_channel()
+    return {"youtube": bool(env.get("YOUTUBE_API_KEY")), "anthropic": claude_mode() is not None, "claudeMode": claude_mode(),
+            "openai": bool(env.get("OPENAI_API_KEY")), "googleClient": bool(env.get("GOOGLE_CLIENT_ID") and env.get("GOOGLE_CLIENT_SECRET")),
+            "googleConnected": TOKENS.exists(), "channel": channel["handle"], "niche": channel["niche"], "channelName": channel["name"],
+            "channels": load_channels(), "activeChannel": cur_id(), "quotaLimit": quota_limit()}
+
+
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
+    """Serves the UI, the icon files and the JSON API on localhost."""
+
+    def log_message(self, *args):
+        """Silence the default per-request console logging."""
 
     def send(self, code, body, ctype="application/json", headers=None):
+        """Write a complete HTTP response."""
         b = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -1294,64 +1402,60 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, fn())
         except ApiError as e:
             self.send(e.status, {"error": str(e)})
-        except Exception as e:  # noqa
+        except Exception as e:  # pylint: disable=broad-exception-caught  # last resort: answer with JSON instead of dropping the connection
             self.send(500, {"error": f"{type(e).__name__}: {e}"})
 
-    def do_GET(self):
-        if not self.guard():
+    def send_file(self, f, allowed=True, default_type="application/octet-stream", headers=None):
+        """Send file `f` if it exists and is allowed; otherwise 404."""
+        if allowed and f.is_file():
+            self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or default_type, headers)
+        else:
+            self.send(404, {"error": "not found"})
+
+    def serve_edit_file(self, q):
+        """Thumbnail previews from an edit folder."""
+        try:
+            f = edit_dir(q.get("name")) / "thumbnail and metadata" / Path(q.get("file", "")).name
+        except ApiError as e:
+            self.send(e.status, {"error": str(e)})
             return
-        u = urllib.parse.urlparse(self.path)
-        q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
-        self.pick_channel(q)
-        redirect_uri = f"http://{self.headers.get('Host')}/oauth/callback"
-        if u.path == "/":
-            return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
-        if u.path == "/favicon.ico" or u.path.startswith("/assets/"):  # app icon files shipped in ./assets
-            f = ROOT / "assets" / Path(u.path).name
-            ok = f.is_file() and f.suffix.lower() in {".png", ".ico", ".jpeg", ".jpg", ".svg"}
-            return self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream", {"Cache-Control": "max-age=3600"}) \
-                if ok else self.send(404, {"error": "not found"})
-        if u.path.startswith("/thumbs/"):
-            f = THUMBS / Path(u.path).name
-            return self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "image/jpeg") if f.is_file() else self.send(404, {"error": "not found"})
-        if u.path == "/edit-file":  # thumbnail previews from an edit folder
+        self.send_file(f, f.suffix.lower() in IMG_EXT, "image/jpeg")
+
+    def serve_ytthumb(self, q):
+        """Proxy so any YouTube thumbnail can be downloaded."""
+        vid = q.get("id", "")
+        if not re.fullmatch(r"[\w-]{11}", vid):
+            self.send(400, {"error": "bad id"})
+            return
+        for res in ("maxresdefault", "hqdefault"):
             try:
-                f = edit_dir(q.get("name")) / "thumbnail and metadata" / Path(q.get("file", "")).name
-            except ApiError as e:
-                return self.send(e.status, {"error": str(e)})
-            ok = f.is_file() and f.suffix.lower() in IMG_EXT
-            return self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "image/jpeg") if ok else self.send(404, {"error": "not found"})
-        if u.path == "/api/ytthumb":  # proxy so any YouTube thumbnail can be downloaded
-            vid = q.get("id", "")
-            if not re.fullmatch(r"[\w-]{11}", vid):
-                return self.send(400, {"error": "bad id"})
-            for res in ("maxresdefault", "hqdefault"):
-                try:
-                    with urllib.request.urlopen(f"https://i.ytimg.com/vi/{vid}/{res}.jpg", timeout=20) as r:
-                        return self.send(200, r.read(), "image/jpeg", {"Content-Disposition": f'attachment; filename="thumbnail_{vid}.jpg"'})
-                except urllib.error.URLError:
-                    continue
-            return self.send(404, {"error": "thumbnail not found"})
-        if u.path == "/oauth/start":
-            try:
-                return self.redirect(oauth_url(redirect_uri))
-            except ApiError as e:
-                return self.send(400, f"<p>{e}</p>".encode(), "text/html")
-        if u.path == "/oauth/callback":
-            try:
-                if "code" not in q:
-                    raise ApiError(f"Google returned: {q.get('error', 'no code')}")
-                oauth_callback(q["code"], q.get("state"), redirect_uri)
-                return self.redirect("/#publish")
-            except ApiError as e:
-                return self.send(400, f"<p>Connection failed: {e}</p><a href='/'>Back</a>".encode(), "text/html")
-        if u.path == "/api/config":
-            e = load_env()
-            return self.send(200, {"youtube": bool(e.get("YOUTUBE_API_KEY")), "anthropic": claude_mode() is not None, "claudeMode": claude_mode(),
-                                   "openai": bool(e.get("OPENAI_API_KEY")), "googleClient": bool(e.get("GOOGLE_CLIENT_ID") and e.get("GOOGLE_CLIENT_SECRET")),
-                                   "googleConnected": TOKENS.exists(), "channel": active_channel()["handle"], "niche": active_channel()["niche"], "channelName": active_channel()["name"],
-                                   "channels": load_channels(), "activeChannel": cur_id(), "quotaLimit": quota_limit()})
-        routes = {
+                with urllib.request.urlopen(f"https://i.ytimg.com/vi/{vid}/{res}.jpg", timeout=20) as r:
+                    self.send(200, r.read(), "image/jpeg", {"Content-Disposition": f'attachment; filename="thumbnail_{vid}.jpg"'})
+                    return
+            except urllib.error.URLError:
+                continue
+        self.send(404, {"error": "thumbnail not found"})
+
+    def oauth_start(self, redirect_uri):
+        try:
+            self.redirect(oauth_url(redirect_uri))
+        except ApiError as e:
+            self.send(400, f"<p>{e}</p>".encode(), "text/html")
+
+    def oauth_finish(self, q, redirect_uri):
+        try:
+            if "code" not in q:
+                raise ApiError(f"Google returned: {q.get('error', 'no code')}")
+            oauth_callback(q["code"], q.get("state"), redirect_uri)
+            self.redirect("/#publish")
+        except ApiError as e:
+            self.send(400, f"<p>Connection failed: {e}</p><a href='/'>Back</a>".encode(), "text/html")
+
+    @staticmethod
+    def get_routes(q):
+        """JSON API endpoints answered to GET requests."""
+        return {
+            "/api/config": app_config,
             "/api/channel": lambda: channel_analysis(q.get("handle"), int(q.get("count", 50))),
             "/api/trends": lambda: trends(q.get("q", ""), q.get("days", 7), q.get("region", "US"), q.get("max", 30), q.get("order", "viewCount")),
             "/api/video": lambda: video_detail(q.get("id", "")),
@@ -1365,18 +1469,44 @@ class Handler(BaseHTTPRequestHandler):
             "/api/google-channel": lambda: {"channel": connected_channel()},
             "/api/publish/status": lambda: job_status(q.get("job")),
         }
-        if u.path in routes:
-            return self.route(routes[u.path])
-        self.send(404, {"error": "not found"})
 
-    def do_POST(self):
+    def do_GET(self):  # pylint: disable=invalid-name  # name fixed by BaseHTTPRequestHandler
+        if not self.guard():
+            return
+        u = urllib.parse.urlparse(self.path)
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
+        self.pick_channel(q)
+        redirect_uri = f"http://{self.headers.get('Host')}/oauth/callback"
+        routes = self.get_routes(q)
+        if u.path == "/":
+            self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
+        elif u.path == "/favicon.ico" or u.path.startswith("/assets/"):  # app icon files shipped in ./assets
+            f = ROOT / "assets" / Path(u.path).name
+            self.send_file(f, f.suffix.lower() in ASSET_EXT, headers={"Cache-Control": "max-age=3600"})
+        elif u.path.startswith("/thumbs/"):
+            self.send_file(THUMBS / Path(u.path).name, default_type="image/jpeg")
+        elif u.path == "/edit-file":
+            self.serve_edit_file(q)
+        elif u.path == "/api/ytthumb":
+            self.serve_ytthumb(q)
+        elif u.path == "/oauth/start":
+            self.oauth_start(redirect_uri)
+        elif u.path == "/oauth/callback":
+            self.oauth_finish(q, redirect_uri)
+        elif u.path in routes:
+            self.route(routes[u.path])
+        else:
+            self.send(404, {"error": "not found"})
+
+    def do_POST(self):  # pylint: disable=invalid-name  # name fixed by BaseHTTPRequestHandler
         if not self.guard(post=True):
             return
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         self.pick_channel()
         if self.path == "/api/settings":
             save_env({k: body[k].strip() for k in SETTINGS_KEYS if body.get(k, "").strip()})
-            return self.send(200, {"ok": True})
+            self.send(200, {"ok": True})
+            return
         routes = {"/api/script": make_script, "/api/next-videos": next_videos, "/api/package": build_package,
                   "/api/thumbnail": gen_thumbnail, "/api/project": project_save, "/api/publish": start_publish,
                   "/api/channels": upsert_channel, "/api/channels/delete": delete_channel,
@@ -1384,16 +1514,22 @@ class Handler(BaseHTTPRequestHandler):
                   "/api/style/build": lambda b: start_job("Building style.md", build_style),
                   "/api/assets/index": lambda b: start_job("Indexing master assets", index_master_assets)}
         if self.path in routes:
-            return self.route(lambda: routes[self.path](body))
-        self.send(404, {"error": "not found"})
+            self.route(lambda: routes[self.path](body))
+        else:
+            self.send(404, {"error": "not found"})
 
 
-if __name__ == "__main__":
+def main():
+    """Entry point: `python server.py` starts the app; `--init` only creates the channel list and folders (used by setup)."""
     migrate_legacy()
-    if "--init" in sys.argv:  # used by setup.bat: create the channel list and folder skeleton, then exit
-        for c in load_channels():
-            print(f"channel '{c['name']}': {DATA / 'channels' / c['id']}")
-        sys.exit(0)
+    if "--init" in sys.argv:
+        for ch in load_channels():
+            print(f"channel '{ch['name']}': {DATA / 'channels' / ch['id']}")
+        return
     port = int(os.environ.get("PORT", 8791))
     print(f"TubePilot -> http://127.0.0.1:{port}")
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

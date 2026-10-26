@@ -573,7 +573,7 @@ async function pollJob(id,msgEl,btn){
 async function loadWorkspace(){
   const w=await api('/api/workspace');
   $('#ws-style').innerHTML=w.style.videos.length?`${w.style.videos.length} reference video(s): ${w.style.videos.map(esc).join(', ')} · style.md ${w.style.exists?'exists':'not built yet'}`:'No videos in data/style_reference yet.';
-  if(!w.style.ffmpeg) $('#ws-style').innerHTML+=`<div class="warn">ffmpeg isn't installed — needed to read frames from the videos. Run <code>winget install Gyan.FFmpeg</code>, then restart the app.</div>`;
+  if(!w.style.ffmpeg) $('#ws-style').innerHTML+=`<div class="warn">ffmpeg isn't available — needed to read frames from the videos. Run <code>python -m pip install imageio-ffmpeg</code> (or install ffmpeg), then restart the app.</div>`;
   $('#ws-assets').textContent=`${w.assets.total} image(s) in master_assets · ${w.assets.unindexed} not indexed yet · master_assets.md ${w.assets.exists?'exists':'not built yet'}`;
   $('#ws-edits').innerHTML=w.edits.length?`<table><tr><th>Folder</th><th>Raw</th><th>Your assets</th><th>Claude assets</th><th>Thumb</th><th>Metadata</th><th>Final</th><th></th></tr>`+
     w.edits.map(e=>`<tr><td><b>${esc(e.name)}</b><div class="meta">${esc(e.title||'')}</div></td><td>${e.raw}</td><td>${e.user_assets}</td><td>${e.claude_assets}</td><td>${e.thumbnails?'✓':'–'}</td><td>${e.hasMetadata?'✓':'–'}</td><td>${e.final?'✓':'–'}</td>

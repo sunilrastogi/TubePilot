@@ -10,3 +10,5 @@ __pycache__/
 # Everything inside data/ is personal (channels, videos, photos, projects, generated files, sign-in tokens).
 # setup.bat / server.py --init create the folder structure.
 /data/
+.DS_Store
+.venv/

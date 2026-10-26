@@ -13,7 +13,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
   <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-3776AB.svg">
-  <img alt="Platform: Windows" src="https://img.shields.io/badge/setup-Windows-0078D6.svg">
+  <img alt="Platform: Windows and macOS" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D6.svg">
   <img alt="Dependencies: Pillow + imageio-ffmpeg" src="https://img.shields.io/badge/pip%20packages-2-brightgreen.svg">
 </p>
 
@@ -33,7 +33,8 @@
 10. [Troubleshooting](#10-troubleshooting)
 11. [Privacy and security](#11-privacy-and-security)
 12. [Project layout](#12-project-layout)
-13. [License and disclaimer](#13-license-and-disclaimer)
+13. [Development](#13-development)
+14. [License and disclaimer](#14-license-and-disclaimer)
 
 > **About the screenshots:** they were taken from the real app with a real channel. Other creators' names are blurred and their thumbnails are left out.
 
@@ -67,13 +68,13 @@ My channel ─► Video analysis ─► Next 3 videos ─► Save to edit folder
 
 ## 2. Requirements
 
-- **Windows 10 or 11.** The setup script is a `.bat` file. The Python code itself is cross-platform if you prefer to set it up by hand.
-- **Python 3.9 or newer** from [python.org](https://www.python.org/downloads/). In the installer, tick **"Add python.exe to PATH"**.
+- **Windows 10/11 or macOS** (Intel and Apple Silicon). Linux also works with the same scripts as macOS.
+- **Python 3.9 or newer.** Windows: from [python.org](https://www.python.org/downloads/), and in the installer tick **"Add python.exe to PATH"**. macOS: from [python.org](https://www.python.org/downloads/macos/) or `brew install python` (the Xcode command line tools' Python 3.9 also works).
 - A **Google account** that owns your YouTube channel.
 - A modern browser (Chrome, Edge, Firefox).
-- Optional: **ffmpeg + ffprobe** on your PATH, only for the [`edit.py`](#9-the-editpy-helper) cutting helper. Style analysis works without it (a copy of ffmpeg is installed with the pip packages).
+- Optional: **ffmpeg + ffprobe** on your PATH, only for the [`edit.py`](#9-the-editpy-helper) cutting helper. Style analysis works without it (a copy of ffmpeg is installed with the pip packages). macOS: `brew install ffmpeg`.
 
-You do **not** need Node, Docker or a database. The server uses only Python's standard library; the only pip packages are Pillow and imageio-ffmpeg.
+You do **not** need Node, Docker or a database. The server uses only Python's standard library; the only pip packages are Pillow, imageio-ffmpeg and certifi (HTTPS certificates, needed on macOS).
 
 ---
 
@@ -87,29 +88,38 @@ Either clone it:
 git clone https://github.com/sunilrastogi/TubePilot.git
 ```
 
-or click **Code → Download ZIP** on GitHub and extract it anywhere (for example `C:\TubePilot`).
+or click **Code → Download ZIP** on GitHub and extract it anywhere (for example `C:\TubePilot` on Windows, `~/TubePilot` on a Mac).
 
-### Step 2: Double-click `setup.bat`
+### Step 2: Run the setup script
 
-`setup.bat` does everything for you. It:
+| | Windows | macOS (and Linux) |
+|---|---|---|
+| **Run** | double-click **`setup.bat`** | double-click **`setup.command`** in Finder, or in Terminal: `cd ~/TubePilot && ./setup.command` |
+| **Where packages go** | your user Python | a private virtual environment in `.venv/` (this avoids the "externally-managed-environment" error that Homebrew Python gives) |
+
+> **macOS, first time only.** If macOS says *"setup.command can't be opened because Apple cannot check it"* (it flags files downloaded as a ZIP), right-click the file → **Open** → **Open**, or run `xattr -dr com.apple.quarantine ~/TubePilot` once in Terminal. If Terminal says *"permission denied"*, run `chmod +x setup.command run.command`.
+
+The script does everything for you. It:
 
 1. checks that Python 3.9+ is installed (and opens the download page if not),
-2. installs the two pip packages,
+2. installs the pip packages (Pillow, imageio-ffmpeg, certifi),
 3. creates your `.env` file from `.env.example`,
 4. creates the full folder structure for your first channel (see [Folder structure](#6-folder-structure)), including a `sample_video` template with all the editing sub-folders,
 5. tells you whether the optional tools (Claude CLI, ffmpeg) were found.
 
-<p align="center"><img src="docs/screenshots/setup-terminal.png" alt="setup.bat output" width="760"></p>
+<p align="center"><img src="docs/screenshots/setup-terminal.png" alt="setup output (Windows shown; macOS prints the same steps)" width="760"></p>
 
 It is safe to run again at any time. It never overwrites your `.env` or your data.
 
 ### Step 3: Add your credentials
 
-You need only the YouTube key to start. See [Credentials](#4-credentials-get-every-key-and-sign-in) for exactly where to get each one. You can paste them into the app (step 4) or edit `.env` in Notepad.
+You need only the YouTube key to start. See [Credentials](#4-credentials-get-every-key-and-sign-in) for exactly where to get each one. You can paste them into the app (step 4) or edit `.env` in any text editor.
 
-### Step 4: Double-click `run.bat`
+### Step 4: Start TubePilot
 
-The server starts and your browser opens at **http://127.0.0.1:8791**. Keep the black console window open while you use TubePilot; close it to stop the app.
+Windows: double-click **`run.bat`**. macOS: double-click **`run.command`** (or run `./run.command` in Terminal).
+
+The server starts and your browser opens at **http://127.0.0.1:8791**. Keep the console window open while you use TubePilot; close it (or press `Ctrl+C`) to stop the app. If you skipped Step 2, the launcher runs the setup for you on first start.
 
 Go to **Settings** (bottom of the left sidebar), paste your keys, click **Save**, and add your channel:
 
@@ -370,7 +380,7 @@ Other settings: the port can be changed with `set PORT=8800` before `python serv
 
 ## 9. The `edit.py` helper
 
-A command-line helper that works on the same edit folders. It needs **ffmpeg and ffprobe on your PATH** (`winget install Gyan.FFmpeg`, then reopen the terminal) and an `OPENAI_API_KEY` (Whisper transcription).
+A command-line helper that works on the same edit folders. It needs **ffmpeg and ffprobe on your PATH** (Windows: `winget install Gyan.FFmpeg` then reopen the terminal; macOS: `brew install ffmpeg`) and an `OPENAI_API_KEY` (Whisper transcription).
 
 ```
 python edit.py analyze  <video_folder>                       transcribe and propose cuts for long pauses
@@ -389,7 +399,12 @@ Overlay files in `user_assets` are named `overlay_MM_SS[_LEN].ext`. For example,
 
 | Problem | Fix |
 |---|---|
-| `python` is not recognised | Reinstall Python and tick **Add python.exe to PATH**, then run `setup.bat` again. |
+| `python` is not recognised (Windows) | Reinstall Python and tick **Add python.exe to PATH**, then run `setup.bat` again. |
+| `python3: command not found` / "no developer tools" (macOS) | Install Python from python.org or `brew install python`; if macOS offers the command line developer tools, accept them. Then run `./setup.command` again. |
+| macOS: "can't be opened because Apple cannot check it" | Right-click the file → **Open** → **Open**, or run `xattr -dr com.apple.quarantine ~/TubePilot`. |
+| macOS/Linux: `permission denied: ./setup.command` | Run `chmod +x setup.command run.command` (a ZIP download can drop the executable flag). |
+| `SSL: CERTIFICATE_VERIFY_FAILED` (macOS) | TubePilot uses the `certifi` package for certificates, which setup installs. If you see it anyway, run `/Applications/Python 3.x/Install Certificates.command` once, or rerun `./setup.command`. |
+| Linux: "ensurepip is not available" | `sudo apt install python3-venv`, then run `./setup.command` again. |
 | Page doesn't load / `Address already in use` | Another program uses port 8791. Close it, or run `set PORT=8800 && python server.py` (publishing's sign-in needs 8791, so keep the default if you can). |
 | "Claude CLI isn't logged in" | Open a terminal, run `claude`, type `/login`. Or add an Anthropic API key in Settings. |
 | "Add your YOUTUBE_API_KEY" | Save the key in **Settings**, then retry. |
@@ -423,10 +438,15 @@ TubePilot/
 ├── server.py            the whole backend (standard library only)
 ├── index.html           the whole UI (one file, no build step)
 ├── edit.py              command-line editing helper
-├── setup.bat            one-click setup
-├── run.bat              start the app
-├── requirements.txt     Pillow, imageio-ffmpeg
+├── setup.bat            one-click setup (Windows)
+├── run.bat              start the app (Windows)
+├── setup.command        one-click setup (macOS / Linux)
+├── run.command          start the app (macOS / Linux)
+├── requirements.txt     Pillow, imageio-ffmpeg, certifi
 ├── .env.example         credentials template
+├── .pylintrc            lint settings
+├── .gitattributes       keeps .bat as CRLF and .command as LF
+├── .github/workflows/   CI: pylint + smoke tests on Windows, macOS and Linux
 ├── assets/              TubePilot icons
 ├── docs/screenshots/    README images
 ├── LICENSE              Apache License 2.0
@@ -435,7 +455,20 @@ TubePilot/
 
 ---
 
-## 13. License and disclaimer
+## 13. Development
+
+Code quality is checked with [pylint](https://pylint.readthedocs.io). The settings live in [`.pylintrc`](.pylintrc), and the code scores **10.00/10**:
+
+```bash
+python -m pip install pylint -r requirements.txt
+python -m pylint $(git ls-files '*.py')        # PowerShell: python -m pylint (git ls-files '*.py')
+```
+
+On every push, [GitHub Actions](.github/workflows/pylint.yml) runs pylint on several Python versions and a **smoke test on Windows, macOS and Linux**: it runs the setup script, starts the server, checks that the UI, icon and API answer, and that HTTPS certificates work. Please keep both green.
+
+---
+
+## 14. License and disclaimer
 
 TubePilot is licensed under the **[Apache License 2.0](LICENSE)**. See [NOTICE](NOTICE) for attribution.
 
