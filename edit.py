@@ -1,4 +1,6 @@
-"""Command-line video editing helper (stdlib only; needs ffmpeg + ffprobe on PATH).
+# Copyright 2026 Sunil Rastogi
+# SPDX-License-Identifier: Apache-2.0
+"""TubePilot command-line video editing helper (stdlib only; needs ffmpeg + ffprobe on PATH).
 
   python edit.py analyze <video_folder>   transcribe (Whisper API) and propose cuts for pauses
   python edit.py add-cut <video_folder> START END "reason"   add a cut (repetition / fumble) to cuts.json

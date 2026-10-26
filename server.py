@@ -1,4 +1,6 @@
-"""Lightweight YouTube research utility. Zero dependencies (stdlib only).
+# Copyright 2026 Sunil Rastogi
+# SPDX-License-Identifier: Apache-2.0
+"""TubePilot: a lightweight YouTube research and production tool. The server uses only the standard library.
 
 Run:  python server.py   ->  http://127.0.0.1:8791
 Keys live in .env (YOUTUBE_API_KEY, ANTHROPIC_API_KEY, CHANNEL).
@@ -16,6 +18,7 @@ ENV_PATH = ROOT / ".env"
 CACHE_DIR = ROOT / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 DATA = ROOT / "data"
+DATA.mkdir(exist_ok=True)  # git-ignored, so absent on a fresh clone
 CHANNELS_F = DATA / "channels.json"
 CH_SUBS = ("style_reference", "master_assets", "edits", "thumbs", "projects")  # per-channel folders under data/channels/<id>/
 CTX = threading.local()  # the channel a request (or background job) is working for
@@ -1303,6 +1306,11 @@ class Handler(BaseHTTPRequestHandler):
         redirect_uri = f"http://{self.headers.get('Host')}/oauth/callback"
         if u.path == "/":
             return self.send(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
+        if u.path == "/favicon.ico" or u.path.startswith("/assets/"):  # app icon files shipped in ./assets
+            f = ROOT / "assets" / Path(u.path).name
+            ok = f.is_file() and f.suffix.lower() in {".png", ".ico", ".jpeg", ".jpg", ".svg"}
+            return self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream", {"Cache-Control": "max-age=3600"}) \
+                if ok else self.send(404, {"error": "not found"})
         if u.path.startswith("/thumbs/"):
             f = THUMBS / Path(u.path).name
             return self.send(200, f.read_bytes(), mimetypes.guess_type(f.name)[0] or "image/jpeg") if f.is_file() else self.send(404, {"error": "not found"})
@@ -1387,5 +1395,5 @@ if __name__ == "__main__":
             print(f"channel '{c['name']}': {DATA / 'channels' / c['id']}")
         sys.exit(0)
     port = int(os.environ.get("PORT", 8791))
-    print(f"YouTube research utility -> http://127.0.0.1:{port}")
+    print(f"TubePilot -> http://127.0.0.1:{port}")
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

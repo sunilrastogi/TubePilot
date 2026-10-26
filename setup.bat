@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  Channel Lab - one-click setup (double-click this file)
+rem  TubePilot - one-click setup (double-click this file)
 rem  - checks Python, installs dependencies
 rem  - creates the whole video-editing folder structure
 rem  - creates your .env from .env.example
@@ -8,12 +8,12 @@ rem  Run with /auto to skip all prompts.
 rem ============================================================
 setlocal
 cd /d "%~dp0"
-title Channel Lab setup
+title TubePilot setup
 set "AUTO=0"
 if /i "%~1"=="/auto" set "AUTO=1"
 
 echo.
-echo === Channel Lab setup ===
+echo === TubePilot setup ===
 echo.
 
 rem ---------- 1. Python ----------

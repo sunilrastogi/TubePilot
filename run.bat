@@ -1,13 +1,13 @@
 @echo off
 cd /d "%~dp0"
-title Channel Lab
+title TubePilot
 set "PY=python"
 where py >nul 2>nul && set "PY=py -3"
 if not exist ".env" (
   echo .env not found - running setup first...
   call setup.bat /auto
 )
-echo Starting Channel Lab on http://127.0.0.1:8791  ^(close this window to stop^)
+echo Starting TubePilot on http://127.0.0.1:8791  ^(close this window to stop^)
 start "" cmd /c "ping -n 3 127.0.0.1 >nul & start http://127.0.0.1:8791"
 %PY% server.py
 echo.
